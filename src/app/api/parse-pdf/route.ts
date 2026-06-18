@@ -1,11 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PDFParse } from "pdf-parse";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 interface ParsedRow {
   date: string;
   description: string;
   amount: number;
   type: "income" | "expense";
+}
+
+async function extractText(data: Uint8Array, password?: string): Promise<string> {
+  const params: Record<string, unknown> = {
+    data,
+    useSystemFonts: true,
+    isEvalSupported: false,
+    disableFontFace: true,
+  };
+  if (password) params.password = password;
+
+  const doc = await getDocument(params).promise;
+  const pages: string[] = [];
+
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    const strings = content.items
+      .filter((item): item is typeof item & { str: string } => "str" in item)
+      .map((item) => item.str);
+    pages.push(strings.join(" "));
+  }
+
+  await doc.destroy();
+  return pages.join("\n");
 }
 
 export async function POST(request: NextRequest) {
@@ -25,11 +50,7 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const data = new Uint8Array(arrayBuffer);
 
-    const parser = new PDFParse({ data, password });
-    const textResult = await parser.getText();
-    const text = textResult.text;
-    await parser.destroy();
-
+    const text = await extractText(data, password);
     const transactions = parseBankStatementText(text);
 
     return NextResponse.json({ transactions, rawText: text.substring(0, 2000) });
@@ -47,7 +68,6 @@ export async function POST(request: NextRequest) {
           ? "This PDF is password-protected. Please enter the password to unlock it."
           : `Failed to parse PDF: ${message || "Unknown error"}`,
         needsPassword: isPasswordError,
-        debug: { name, message: message.substring(0, 200) },
       },
       { status: isPasswordError ? 401 : 500 }
     );
