@@ -1,5 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
+if (typeof globalThis.DOMMatrix === "undefined") {
+  (globalThis as Record<string, unknown>).DOMMatrix = class DOMMatrix {
+    a: number; b: number; c: number; d: number; e: number; f: number;
+    constructor(init?: number[]) {
+      const v = init || [1, 0, 0, 1, 0, 0];
+      this.a = v[0]; this.b = v[1]; this.c = v[2];
+      this.d = v[3]; this.e = v[4]; this.f = v[5];
+    }
+  };
+}
+
 interface ParsedRow {
   date: string;
   description: string;
