@@ -62,6 +62,13 @@ export default function Home() {
   const handleImport = useCallback(async (imported: Transaction[]) => {
     const updated = await addTransactions(imported);
     setTransactions(updated);
+    if (imported.length > 0) {
+      const firstDate = imported[0].date;
+      const [year, month] = firstDate.split("-").map(Number);
+      if (year && month) {
+        setCurrentMonth(new Date(year, month - 1, 1));
+      }
+    }
     setActiveTab("dashboard");
   }, []);
 
