@@ -45,8 +45,9 @@ export async function POST(request: NextRequest) {
       {
         error: isPasswordError
           ? "This PDF is password-protected. Please enter the password to unlock it."
-          : "Failed to parse PDF. The file may be corrupted or in an unsupported format.",
+          : `Failed to parse PDF: ${message || "Unknown error"}`,
         needsPassword: isPasswordError,
+        debug: { name, message: message.substring(0, 200) },
       },
       { status: isPasswordError ? 401 : 500 }
     );
