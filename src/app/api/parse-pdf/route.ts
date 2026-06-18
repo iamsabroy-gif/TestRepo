@@ -29,9 +29,12 @@ interface TextRow {
 }
 
 interface ColumnPositions {
-  debitX: number;
-  creditX: number;
+  type: "dual" | "single";
+  debitX?: number;
+  creditX?: number;
+  amountX?: number;
   balanceX: number | null;
+  drcrX?: number;
 }
 
 async function extractStructuredText(
@@ -92,46 +95,132 @@ async function extractStructuredText(
   return { rows: allRows, text };
 }
 
+const DEBIT_HEADERS = /^(debit|withdrawal|dr\.?|debit\s*am(oun)?t|withdrawal\s*am(oun)?t|paid|outflow|money\s*out|debit\s*\(dr\))$/i;
+const CREDIT_HEADERS = /^(credit|deposit|cr\.?|credit\s*am(oun)?t|deposit\s*am(oun)?t|received|inflow|money\s*in|credit\s*\(cr\))$/i;
+const BALANCE_HEADERS = /^(balance|closing|running|closing\s*bal\.?|running\s*bal\.?|available\s*bal\.?|bal\.?)$/i;
+const AMOUNT_HEADERS = /^(amount|transaction\s*am(oun)?t|txn\s*am(oun)?t|value)$/i;
+const DRCR_HEADERS = /^(dr\s*\/\s*cr|type|cr\s*\/\s*dr|txn\s*type)$/i;
+
 function detectColumnPositions(rows: TextRow[]): ColumnPositions | null {
   for (const row of rows.slice(0, 40)) {
     let debitX = -1;
     let creditX = -1;
     let balanceX = -1;
+    let amountX = -1;
+    let drcrX = -1;
 
     for (const cell of row.cells) {
       const lower = cell.str.toLowerCase().trim();
-      if (/^(debit|withdrawal|dr\.?|debit\s*amount)$/i.test(lower) && debitX === -1) {
-        debitX = cell.x;
-      }
-      if (/^(credit|deposit|cr\.?|credit\s*amount)$/i.test(lower) && creditX === -1) {
-        creditX = cell.x;
-      }
-      if (/^(balance|closing|running|closing\s*balance)$/i.test(lower) && balanceX === -1) {
-        balanceX = cell.x;
-      }
+      if (DEBIT_HEADERS.test(lower) && debitX === -1) debitX = cell.x;
+      if (CREDIT_HEADERS.test(lower) && creditX === -1) creditX = cell.x;
+      if (BALANCE_HEADERS.test(lower) && balanceX === -1) balanceX = cell.x;
+      if (AMOUNT_HEADERS.test(lower) && amountX === -1) amountX = cell.x;
+      if (DRCR_HEADERS.test(lower) && drcrX === -1) drcrX = cell.x;
     }
 
     if (debitX >= 0 && creditX >= 0) {
-      return { debitX, creditX, balanceX: balanceX >= 0 ? balanceX : null };
+      return {
+        type: "dual",
+        debitX,
+        creditX,
+        balanceX: balanceX >= 0 ? balanceX : null,
+      };
+    }
+
+    if (amountX >= 0) {
+      return {
+        type: "single",
+        amountX,
+        balanceX: balanceX >= 0 ? balanceX : null,
+        drcrX: drcrX >= 0 ? drcrX : undefined,
+      };
     }
   }
+
+  return inferColumnsFromData(rows);
+}
+
+function inferColumnsFromData(rows: TextRow[]): ColumnPositions | null {
+  const amountXPositions: Map<number, number> = new Map();
+  const amountPattern = /^\d{1,3}(?:,\d{2,3})*\.\d{1,2}$/;
+
+  for (const row of rows) {
+    if (!row.text.match(datePattern)) continue;
+    for (const cell of row.cells) {
+      if (amountPattern.test(cell.str.trim())) {
+        const bucket = Math.round(cell.x / 10) * 10;
+        amountXPositions.set(bucket, (amountXPositions.get(bucket) || 0) + 1);
+      }
+    }
+  }
+
+  const columns = [...amountXPositions.entries()]
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => a[0] - b[0]);
+
+  if (columns.length >= 3) {
+    return {
+      type: "dual",
+      debitX: columns[0][0],
+      creditX: columns[1][0],
+      balanceX: columns[columns.length - 1][0],
+    };
+  }
+
+  if (columns.length === 2) {
+    const leftHasEmpties = checkColumnHasGaps(rows, columns[0][0]);
+    const rightHasEmpties = checkColumnHasGaps(rows, columns[1][0]);
+
+    if (leftHasEmpties && rightHasEmpties) {
+      return { type: "dual", debitX: columns[0][0], creditX: columns[1][0], balanceX: null };
+    }
+    if (!leftHasEmpties && rightHasEmpties) {
+      return { type: "single", amountX: columns[0][0], balanceX: null };
+    }
+    return { type: "dual", debitX: columns[0][0], creditX: columns[1][0], balanceX: null };
+  }
+
   return null;
+}
+
+function checkColumnHasGaps(rows: TextRow[], colX: number): boolean {
+  const amountPattern = /^\d{1,3}(?:,\d{2,3})*\.\d{1,2}$/;
+  let dataRows = 0;
+  let filledRows = 0;
+
+  for (const row of rows) {
+    if (!row.text.match(datePattern)) continue;
+    dataRows++;
+    for (const cell of row.cells) {
+      if (amountPattern.test(cell.str.trim()) && Math.abs(cell.x - colX) <= 15) {
+        filledRows++;
+        break;
+      }
+    }
+  }
+
+  return dataRows > 0 && filledRows < dataRows * 0.8;
 }
 
 function classifyAmountByPosition(
   x: number,
   cols: ColumnPositions
-): "debit" | "credit" | "balance" | null {
+): "debit" | "credit" | "balance" | "amount" | null {
   const tolerance = 50;
+  const candidates: { col: "debit" | "credit" | "balance" | "amount"; dist: number }[] = [];
 
-  const candidates: { col: "debit" | "credit" | "balance"; dist: number }[] = [
-    { col: "debit", dist: Math.abs(x - cols.debitX) },
-    { col: "credit", dist: Math.abs(x - cols.creditX) },
-  ];
+  if (cols.type === "dual") {
+    if (cols.debitX !== undefined) candidates.push({ col: "debit", dist: Math.abs(x - cols.debitX) });
+    if (cols.creditX !== undefined) candidates.push({ col: "credit", dist: Math.abs(x - cols.creditX) });
+  } else {
+    if (cols.amountX !== undefined) candidates.push({ col: "amount", dist: Math.abs(x - cols.amountX) });
+  }
+
   if (cols.balanceX !== null) {
     candidates.push({ col: "balance", dist: Math.abs(x - cols.balanceX) });
   }
 
+  if (candidates.length === 0) return null;
   candidates.sort((a, b) => a.dist - b.dist);
   return candidates[0].dist <= tolerance ? candidates[0].col : null;
 }
@@ -194,6 +283,53 @@ function parseBankStatement(rows: TextRow[], text: string): ParsedRow[] {
   return parseEmailStyle(text);
 }
 
+function extractDescription(row: TextRow, nextRow: TextRow | null): string {
+  let description = "";
+  for (const cell of row.cells) {
+    const trimmed = cell.str.trim();
+    if (
+      trimmed &&
+      !amountRegex.test(trimmed) &&
+      !datePattern.test(trimmed) &&
+      !/^(dr|cr|dr\.?|cr\.?)$/i.test(trimmed) &&
+      trimmed.length > 1
+    ) {
+      description += (description ? " " : "") + trimmed;
+    }
+  }
+
+  if (description.length < 5 && nextRow && !nextRow.text.match(datePattern)) {
+    for (const cell of nextRow.cells) {
+      const trimmed = cell.str.trim();
+      if (trimmed && !amountRegex.test(trimmed) && !datePattern.test(trimmed)) {
+        description += " " + trimmed;
+      }
+    }
+  }
+
+  description = description.replace(/\s+/g, " ").substring(0, 100).trim();
+  return description || "Bank transaction";
+}
+
+function detectDrCrFromRow(row: TextRow, cols: ColumnPositions): "debit" | "credit" | null {
+  if (cols.drcrX === undefined) return null;
+  const tolerance = 30;
+  for (const cell of row.cells) {
+    if (Math.abs(cell.x - cols.drcrX) > tolerance) continue;
+    const lower = cell.str.toLowerCase().trim();
+    if (/^(dr\.?|debit|d)$/i.test(lower)) return "debit";
+    if (/^(cr\.?|credit|c)$/i.test(lower)) return "credit";
+  }
+  return null;
+}
+
+function detectTypeFromText(text: string): "income" | "expense" {
+  const isCredit = /credit|cr\b|deposit|received|neft.*from|upi.*from|imps.*from|interest|salary|refund|cashback|reversal|upi\/cr/i.test(text);
+  const isDebit = /debit|dr\b|paid|withdraw|purchase|upi.*to|neft.*to|imps.*to|emi|charge|fee|upi\/dr/i.test(text);
+  if (isCredit && !isDebit) return "income";
+  return "expense";
+}
+
 function parseWithColumnPositions(rows: TextRow[], cols: ColumnPositions): ParsedRow[] {
   const results: ParsedRow[] = [];
 
@@ -205,61 +341,58 @@ function parseWithColumnPositions(rows: TextRow[], cols: ColumnPositions): Parse
     const date = normalizeDate(dateMatch[1]);
     if (!date) continue;
 
-    let debitAmount = 0;
-    let creditAmount = 0;
+    const nextRow = i + 1 < rows.length ? rows[i + 1] : null;
+    const description = extractDescription(row, nextRow);
 
-    for (const cell of row.cells) {
-      const m = cell.str.match(amountRegex);
-      if (!m) continue;
+    if (cols.type === "dual") {
+      let debitAmount = 0;
+      let creditAmount = 0;
 
-      const val = parseFloat(m[1].replace(/,/g, ""));
-      if (val <= 0) continue;
+      for (const cell of row.cells) {
+        const m = cell.str.match(amountRegex);
+        if (!m) continue;
+        const val = parseFloat(m[1].replace(/,/g, ""));
+        if (val <= 0) continue;
 
-      const classification = classifyAmountByPosition(cell.x, cols);
-      if (classification === "debit" && debitAmount === 0) {
-        debitAmount = val;
-      } else if (classification === "credit" && creditAmount === 0) {
-        creditAmount = val;
+        const classification = classifyAmountByPosition(cell.x, cols);
+        if (classification === "debit" && debitAmount === 0) debitAmount = val;
+        else if (classification === "credit" && creditAmount === 0) creditAmount = val;
       }
-    }
 
-    if (debitAmount === 0 && creditAmount === 0) continue;
+      if (debitAmount === 0 && creditAmount === 0) continue;
 
-    let description = "";
-    for (const cell of row.cells) {
-      const trimmed = cell.str.trim();
-      if (
-        trimmed &&
-        !amountRegex.test(trimmed) &&
-        !datePattern.test(trimmed) &&
-        trimmed.length > 1
-      ) {
-        description += (description ? " " : "") + trimmed;
+      if (creditAmount > 0 && debitAmount === 0) {
+        results.push({ date, description, amount: creditAmount, type: "income" });
+      } else if (debitAmount > 0 && creditAmount === 0) {
+        results.push({ date, description, amount: debitAmount, type: "expense" });
+      } else if (debitAmount > 0 && creditAmount > 0) {
+        results.push({ date, description, amount: debitAmount, type: "expense" });
+        results.push({ date, description: description + " (Credit)", amount: creditAmount, type: "income" });
       }
-    }
+    } else {
+      let txnAmount = 0;
+      for (const cell of row.cells) {
+        const m = cell.str.match(amountRegex);
+        if (!m) continue;
+        const val = parseFloat(m[1].replace(/,/g, ""));
+        if (val <= 0) continue;
 
-    if (description.length < 5 && i + 1 < rows.length) {
-      const nextRow = rows[i + 1];
-      if (!nextRow.text.match(datePattern)) {
-        for (const cell of nextRow.cells) {
-          const trimmed = cell.str.trim();
-          if (trimmed && !amountRegex.test(trimmed) && !datePattern.test(trimmed)) {
-            description += " " + trimmed;
-          }
+        const classification = classifyAmountByPosition(cell.x, cols);
+        if (classification === "amount") {
+          txnAmount = val;
+          break;
         }
       }
-    }
 
-    description = description.replace(/\s+/g, " ").substring(0, 100).trim();
-    if (!description) description = "Bank transaction";
+      if (txnAmount === 0) continue;
 
-    if (creditAmount > 0 && debitAmount === 0) {
-      results.push({ date, description, amount: creditAmount, type: "income" });
-    } else if (debitAmount > 0 && creditAmount === 0) {
-      results.push({ date, description, amount: debitAmount, type: "expense" });
-    } else if (debitAmount > 0 && creditAmount > 0) {
-      results.push({ date, description, amount: debitAmount, type: "expense" });
-      results.push({ date, description: description + " (Credit)", amount: creditAmount, type: "income" });
+      const drcrType = detectDrCrFromRow(row, cols);
+      let type: "income" | "expense";
+      if (drcrType === "credit") type = "income";
+      else if (drcrType === "debit") type = "expense";
+      else type = detectTypeFromText(row.text);
+
+      results.push({ date, description, amount: txnAmount, type });
     }
   }
 
