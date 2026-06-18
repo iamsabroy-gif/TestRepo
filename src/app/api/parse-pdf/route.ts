@@ -18,7 +18,26 @@ interface ParsedRow {
   type: "income" | "expense";
 }
 
-async function extractText(data: Uint8Array, password?: string): Promise<string> {
+interface TextCell {
+  str: string;
+  x: number;
+}
+
+interface TextRow {
+  cells: TextCell[];
+  text: string;
+}
+
+interface ColumnPositions {
+  debitX: number;
+  creditX: number;
+  balanceX: number | null;
+}
+
+async function extractStructuredText(
+  data: Uint8Array,
+  password?: string
+): Promise<{ rows: TextRow[]; text: string }> {
   const pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
@@ -36,7 +55,7 @@ async function extractText(data: Uint8Array, password?: string): Promise<string>
   if (password) params.password = password;
 
   const doc = await pdfjsLib.getDocument(params).promise;
-  const allLines: string[] = [];
+  const allRows: TextRow[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
@@ -44,48 +63,77 @@ async function extractText(data: Uint8Array, password?: string): Promise<string>
 
     const items: { str: string; x: number; y: number }[] = [];
     for (const item of content.items) {
-      if (!("str" in item) || !(item as { str?: string }).str) continue;
+      if (!("str" in item)) continue;
       const t = item as { str: string; transform: number[] };
-      items.push({ str: t.str, x: t.transform[4], y: Math.round(t.transform[5]) });
+      if (!t.str || !t.str.trim()) continue;
+      items.push({ str: t.str.trim(), x: t.transform[4], y: t.transform[5] });
     }
 
-    const rows = new Map<number, { str: string; x: number }[]>();
-    for (const item of items) {
-      if (!rows.has(item.y)) rows.set(item.y, []);
-      rows.get(item.y)!.push({ str: item.str, x: item.x });
-    }
+    items.sort((a, b) => b.y - a.y || a.x - b.x);
 
-    const sortedYs = [...rows.keys()].sort((a, b) => b - a);
-    for (const y of sortedYs) {
-      const cells = rows.get(y)!.sort((a, b) => a.x - b.x);
-      const line = cells.map((c) => c.str).join(" \t ");
-      allLines.push(line);
+    const yTolerance = 3;
+    let rowStart = 0;
+    while (rowStart < items.length) {
+      const rowY = items[rowStart].y;
+      let rowEnd = rowStart + 1;
+      while (rowEnd < items.length && Math.abs(items[rowEnd].y - rowY) <= yTolerance) {
+        rowEnd++;
+      }
+      const cells = items.slice(rowStart, rowEnd).sort((a, b) => a.x - b.x);
+      const textCells: TextCell[] = cells.map((c) => ({ str: c.str, x: c.x }));
+      const text = cells.map((c) => c.str).join(" \t ");
+      allRows.push({ cells: textCells, text });
+      rowStart = rowEnd;
     }
   }
 
   await doc.destroy();
-  return allLines.join("\n");
+  const text = allRows.map((r) => r.text).join("\n");
+  return { rows: allRows, text };
 }
 
-export async function GET() {
-  try {
-    const pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    Object.defineProperty(pdfjsLib.PDFWorker, "_setupFakeWorkerGlobal", {
-    get: () => Promise.resolve(pdfjsWorker.WorkerMessageHandler),
-    configurable: true,
-  });
-    return NextResponse.json({
-      ok: true,
-      version: pdfjsLib.version || "unknown",
-      workerPatched: true,
-    });
-  } catch (error) {
-    return NextResponse.json({
-      ok: false,
-      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-    });
+function detectColumnPositions(rows: TextRow[]): ColumnPositions | null {
+  for (const row of rows.slice(0, 40)) {
+    let debitX = -1;
+    let creditX = -1;
+    let balanceX = -1;
+
+    for (const cell of row.cells) {
+      const lower = cell.str.toLowerCase().trim();
+      if (/^(debit|withdrawal|dr\.?|debit\s*amount)$/i.test(lower) && debitX === -1) {
+        debitX = cell.x;
+      }
+      if (/^(credit|deposit|cr\.?|credit\s*amount)$/i.test(lower) && creditX === -1) {
+        creditX = cell.x;
+      }
+      if (/^(balance|closing|running|closing\s*balance)$/i.test(lower) && balanceX === -1) {
+        balanceX = cell.x;
+      }
+    }
+
+    if (debitX >= 0 && creditX >= 0) {
+      return { debitX, creditX, balanceX: balanceX >= 0 ? balanceX : null };
+    }
   }
+  return null;
+}
+
+function classifyAmountByPosition(
+  x: number,
+  cols: ColumnPositions
+): "debit" | "credit" | "balance" | null {
+  const tolerance = 50;
+
+  const candidates: { col: "debit" | "credit" | "balance"; dist: number }[] = [
+    { col: "debit", dist: Math.abs(x - cols.debitX) },
+    { col: "credit", dist: Math.abs(x - cols.creditX) },
+  ];
+  if (cols.balanceX !== null) {
+    candidates.push({ col: "balance", dist: Math.abs(x - cols.balanceX) });
+  }
+
+  candidates.sort((a, b) => a.dist - b.dist);
+  return candidates[0].dist <= tolerance ? candidates[0].col : null;
 }
 
 export async function POST(request: NextRequest) {
@@ -105,8 +153,8 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const data = new Uint8Array(arrayBuffer);
 
-    const text = await extractText(data, password);
-    const transactions = parseBankStatementText(text);
+    const { rows, text } = await extractStructuredText(data, password);
+    const transactions = parseBankStatement(rows, text);
 
     return NextResponse.json({ transactions, rawText: text.substring(0, 2000) });
   } catch (error) {
@@ -129,30 +177,98 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function detectHeaderColumns(lines: string[]): { debitIdx: number; creditIdx: number } | null {
-  for (const line of lines.slice(0, 20)) {
-    const lower = line.toLowerCase();
-    if (/debit|withdrawal/i.test(lower) && /credit|deposit/i.test(lower)) {
-      const parts = line.split(/\t/);
-      let debitIdx = -1;
-      let creditIdx = -1;
-      for (let i = 0; i < parts.length; i++) {
-        const p = parts[i].trim().toLowerCase();
-        if (/debit|withdrawal|dr/i.test(p) && debitIdx === -1) debitIdx = i;
-        if (/credit|deposit|cr/i.test(p) && creditIdx === -1) creditIdx = i;
-      }
-      if (debitIdx >= 0 && creditIdx >= 0) return { debitIdx, creditIdx };
-    }
+const datePattern = /(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/;
+const amountRegex = /(\d{1,3}(?:,\d{2,3})*\.\d{1,2})/;
+
+function parseBankStatement(rows: TextRow[], text: string): ParsedRow[] {
+  const cols = detectColumnPositions(rows);
+
+  if (cols) {
+    const results = parseWithColumnPositions(rows, cols);
+    if (results.length > 0) return results;
   }
-  return null;
+
+  const results = parseFromFlatText(text);
+  if (results.length > 0) return results;
+
+  return parseEmailStyle(text);
 }
 
-function parseBankStatementText(text: string): ParsedRow[] {
+function parseWithColumnPositions(rows: TextRow[], cols: ColumnPositions): ParsedRow[] {
+  const results: ParsedRow[] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const dateMatch = row.text.match(datePattern);
+    if (!dateMatch) continue;
+
+    const date = normalizeDate(dateMatch[1]);
+    if (!date) continue;
+
+    let debitAmount = 0;
+    let creditAmount = 0;
+
+    for (const cell of row.cells) {
+      const m = cell.str.match(amountRegex);
+      if (!m) continue;
+
+      const val = parseFloat(m[1].replace(/,/g, ""));
+      if (val <= 0) continue;
+
+      const classification = classifyAmountByPosition(cell.x, cols);
+      if (classification === "debit" && debitAmount === 0) {
+        debitAmount = val;
+      } else if (classification === "credit" && creditAmount === 0) {
+        creditAmount = val;
+      }
+    }
+
+    if (debitAmount === 0 && creditAmount === 0) continue;
+
+    let description = "";
+    for (const cell of row.cells) {
+      const trimmed = cell.str.trim();
+      if (
+        trimmed &&
+        !amountRegex.test(trimmed) &&
+        !datePattern.test(trimmed) &&
+        trimmed.length > 1
+      ) {
+        description += (description ? " " : "") + trimmed;
+      }
+    }
+
+    if (description.length < 5 && i + 1 < rows.length) {
+      const nextRow = rows[i + 1];
+      if (!nextRow.text.match(datePattern)) {
+        for (const cell of nextRow.cells) {
+          const trimmed = cell.str.trim();
+          if (trimmed && !amountRegex.test(trimmed) && !datePattern.test(trimmed)) {
+            description += " " + trimmed;
+          }
+        }
+      }
+    }
+
+    description = description.replace(/\s+/g, " ").substring(0, 100).trim();
+    if (!description) description = "Bank transaction";
+
+    if (creditAmount > 0 && debitAmount === 0) {
+      results.push({ date, description, amount: creditAmount, type: "income" });
+    } else if (debitAmount > 0 && creditAmount === 0) {
+      results.push({ date, description, amount: debitAmount, type: "expense" });
+    } else if (debitAmount > 0 && creditAmount > 0) {
+      results.push({ date, description, amount: debitAmount, type: "expense" });
+      results.push({ date, description: description + " (Credit)", amount: creditAmount, type: "income" });
+    }
+  }
+
+  return results;
+}
+
+function parseFromFlatText(text: string): ParsedRow[] {
   const results: ParsedRow[] = [];
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-
-  const datePattern = /(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/;
-  const headerCols = detectHeaderColumns(lines);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -163,75 +279,46 @@ function parseBankStatementText(text: string): ParsedRow[] {
     if (!date) continue;
 
     const parts = line.split(/\t/);
-    const amounts: { value: number; colIdx: number }[] = [];
-    const amountRegex = /(\d{1,3}(?:,\d{2,3})*\.\d{1,2})/;
+    const amounts: number[] = [];
 
-    for (let j = 0; j < parts.length; j++) {
-      const m = parts[j].trim().match(amountRegex);
+    for (const p of parts) {
+      const m = p.trim().match(amountRegex);
       if (m) {
         const val = parseFloat(m[1].replace(/,/g, ""));
-        if (val > 0) amounts.push({ value: val, colIdx: j });
+        if (val > 0) amounts.push(val);
       }
     }
+
+    if (amounts.length === 0) continue;
 
     let description = "";
     for (const p of parts) {
       const trimmed = p.trim();
-      if (trimmed && !amountRegex.test(trimmed) && !datePattern.test(trimmed)) {
+      if (trimmed && !amountRegex.test(trimmed) && !datePattern.test(trimmed) && trimmed.length > 1) {
         description += (description ? " " : "") + trimmed;
       }
     }
     if (description.length < 5 && i + 1 < lines.length && !lines[i + 1].match(datePattern)) {
-      const nextNonAmount = lines[i + 1].split(/\t/)
+      const nextParts = lines[i + 1].split(/\t/)
         .map((p) => p.trim())
-        .filter((p) => p && !amountRegex.test(p) && !datePattern.test(p))
-        .join(" ");
-      if (nextNonAmount) description += " " + nextNonAmount;
+        .filter((p) => p && !amountRegex.test(p) && !datePattern.test(p));
+      if (nextParts.length) description += " " + nextParts.join(" ");
     }
     description = description.replace(/\s+/g, " ").substring(0, 100).trim();
     if (!description) description = "Bank transaction";
 
-    if (amounts.length === 0) continue;
+    const isCredit = /credit|cr\b|deposit|received|neft.*from|upi.*from|imps.*from|interest|salary|refund|cashback|reversal/i.test(line);
+    const isDebit = /debit|dr\b|paid|withdraw|purchase|upi.*to|neft.*to|imps.*to|emi|charge|fee|upi\/dr/i.test(line);
 
-    if (headerCols && amounts.length >= 2) {
-      const debitAmt = amounts.find((a) => a.colIdx === headerCols.debitIdx);
-      const creditAmt = amounts.find((a) => a.colIdx === headerCols.creditIdx);
-      if (creditAmt && !debitAmt) {
-        results.push({ date, description, amount: creditAmt.value, type: "income" });
-      } else if (debitAmt && !creditAmt) {
-        results.push({ date, description, amount: debitAmt.value, type: "expense" });
-      } else if (debitAmt && creditAmt) {
-        if (creditAmt.value > debitAmt.value) {
-          results.push({ date, description, amount: creditAmt.value, type: "income" });
-        } else {
-          results.push({ date, description, amount: debitAmt.value, type: "expense" });
-        }
-      }
-    } else if (amounts.length >= 3) {
-      const debit = amounts[0].value;
-      const credit = amounts[1].value;
-      if (credit > debit && credit > 0) {
-        results.push({ date, description, amount: credit, type: "income" });
-      } else if (debit > 0) {
-        results.push({ date, description, amount: debit, type: "expense" });
-      }
-    } else if (amounts.length === 2) {
-      const isCredit = /credit|cr\b|deposit|received|neft.*from|upi.*from|imps.*from|interest|salary|refund/i.test(line);
-      const isDebit = /debit|dr\b|paid|withdraw|purchase|upi.*to|neft.*to|imps.*to|emi|charge|fee/i.test(line);
-      const amount = amounts[0].value;
-      if (isCredit && !isDebit) {
-        results.push({ date, description, amount, type: "income" });
-      } else {
-        results.push({ date, description, amount, type: "expense" });
-      }
+    const amount = amounts[0];
+
+    if (isCredit && !isDebit) {
+      results.push({ date, description, amount, type: "income" });
+    } else if (isDebit && !isCredit) {
+      results.push({ date, description, amount, type: "expense" });
     } else {
-      const isCredit = /credit|cr\b|deposit|received|interest|salary|refund|cashback|reversal/i.test(line);
-      results.push({ date, description, amount: amounts[0].value, type: isCredit ? "income" : "expense" });
+      results.push({ date, description, amount, type: "expense" });
     }
-  }
-
-  if (results.length === 0) {
-    return parseEmailStyle(text);
   }
 
   return results;
@@ -239,22 +326,22 @@ function parseBankStatementText(text: string): ParsedRow[] {
 
 function parseEmailStyle(text: string): ParsedRow[] {
   const results: ParsedRow[] = [];
-  const amountRegex = /(?:RS\.?|INR|USD|\$|₹)\s*([\d,]+\.?\d*)/gi;
-  const dateRegex = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/g;
+  const emailAmountRegex = /(?:RS\.?|INR|USD|\$|₹)\s*([\d,]+\.?\d*)/gi;
+  const emailDateRegex = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/g;
   const debitKeywords = /debited|spent|paid|charged|withdrawn|purchase/i;
   const creditKeywords = /credited|received|refund|cashback|deposited|interest/i;
 
   const lines = text.split("\n");
   for (const line of lines) {
-    const amountMatch = amountRegex.exec(line);
-    amountRegex.lastIndex = 0;
+    const amountMatch = emailAmountRegex.exec(line);
+    emailAmountRegex.lastIndex = 0;
     if (!amountMatch) continue;
 
     const amount = parseFloat(amountMatch[1].replace(/,/g, "")) || 0;
     if (amount <= 0) continue;
 
-    const dateMatch = dateRegex.exec(line);
-    dateRegex.lastIndex = 0;
+    const dateMatch = emailDateRegex.exec(line);
+    emailDateRegex.lastIndex = 0;
     const date = dateMatch ? normalizeDate(dateMatch[1]) : new Date().toISOString().split("T")[0];
 
     const type = creditKeywords.test(line) ? "income" as const : debitKeywords.test(line) ? "expense" as const : "expense" as const;
