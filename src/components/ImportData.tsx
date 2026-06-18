@@ -11,7 +11,7 @@ interface Props {
 }
 
 type ImportMode = "pdf" | "csv" | "email";
-type ColumnRole = "ignore" | "date" | "description" | "debit" | "credit";
+type ColumnRole = "ignore" | "date" | "description" | "debit" | "credit" | "amount" | "type";
 
 interface PdfTable {
   headers: string[];
@@ -19,12 +19,14 @@ interface PdfTable {
   suggestions: Record<string, number>;
 }
 
-const COLUMN_ROLES: { value: ColumnRole; label: string }[] = [
-  { value: "ignore", label: "Skip" },
-  { value: "date", label: "Date" },
-  { value: "description", label: "Description" },
-  { value: "debit", label: "Debit (Expense)" },
-  { value: "credit", label: "Credit (Income)" },
+const COLUMN_ROLES: { value: ColumnRole; label: string; desc: string }[] = [
+  { value: "ignore", label: "Skip", desc: "" },
+  { value: "date", label: "Date", desc: "" },
+  { value: "description", label: "Description", desc: "" },
+  { value: "debit", label: "Debit (Expense)", desc: "" },
+  { value: "credit", label: "Credit (Income)", desc: "" },
+  { value: "amount", label: "Amount", desc: "Use with Dr/Cr Type" },
+  { value: "type", label: "Dr/Cr Type", desc: "Use with Amount" },
 ];
 
 function normalizeDate(dateStr: string): string {
@@ -165,13 +167,19 @@ export default function ImportData({ onImport }: Props) {
     const descIdx = columnMap.indexOf("description");
     const debitIdx = columnMap.indexOf("debit");
     const creditIdx = columnMap.indexOf("credit");
+    const amountIdx = columnMap.indexOf("amount");
+    const typeIdx = columnMap.indexOf("type");
 
     if (dateIdx === -1) {
       setError("Please select which column contains the Date.");
       return;
     }
-    if (debitIdx === -1 && creditIdx === -1) {
-      setError("Please select at least a Debit or Credit column.");
+
+    const hasDualCols = debitIdx !== -1 || creditIdx !== -1;
+    const hasSingleCol = amountIdx !== -1;
+
+    if (!hasDualCols && !hasSingleCol) {
+      setError("Please select Debit/Credit columns, or use Amount + Dr/Cr Type.");
       return;
     }
 
@@ -190,38 +198,63 @@ export default function ImportData({ onImport }: Props) {
         ? (row[descIdx] || "").replace(/\s+/g, " ").trim().substring(0, 100) || "Bank transaction"
         : "Bank transaction";
 
-      const rawDebit = debitIdx >= 0 ? (row[debitIdx] || "").trim() : "";
-      const rawCredit = creditIdx >= 0 ? (row[creditIdx] || "").trim() : "";
+      if (hasSingleCol) {
+        const rawAmt = (row[amountIdx] || "").trim();
+        const amtMatch = rawAmt.match(amountRegex);
+        const amt = amtMatch ? parseFloat(amtMatch[0].replace(/,/g, "")) : 0;
+        if (amt <= 0) continue;
 
-      const debitMatch = rawDebit.match(amountRegex);
-      const creditMatch = rawCredit.match(amountRegex);
+        let txnType: "income" | "expense" = "expense";
+        if (typeIdx !== -1) {
+          const typeVal = (row[typeIdx] || "").trim().toLowerCase();
+          if (/^(cr\.?|credit|c|deposit)$/i.test(typeVal)) txnType = "income";
+        } else {
+          if (/credit|cr\b|deposit|received|salary|refund|cashback/i.test(description)) txnType = "income";
+        }
 
-      const debitAmt = debitMatch ? parseFloat(debitMatch[0].replace(/,/g, "")) : 0;
-      const creditAmt = creditMatch ? parseFloat(creditMatch[0].replace(/,/g, "")) : 0;
-
-      if (debitAmt <= 0 && creditAmt <= 0) continue;
-
-      if (debitAmt > 0) {
         transactions.push({
           id: uuidv4(),
-          type: "expense",
-          amount: debitAmt,
+          type: txnType,
+          amount: amt,
           currency: getCurrency(),
           category: "other",
           description,
           date,
         });
-      }
-      if (creditAmt > 0) {
-        transactions.push({
-          id: uuidv4(),
-          type: "income",
-          amount: creditAmt,
-          currency: getCurrency(),
-          category: "other",
-          description,
-          date,
-        });
+      } else {
+        const rawDebit = debitIdx >= 0 ? (row[debitIdx] || "").trim() : "";
+        const rawCredit = creditIdx >= 0 ? (row[creditIdx] || "").trim() : "";
+
+        const debitMatch = rawDebit.match(amountRegex);
+        const creditMatch = rawCredit.match(amountRegex);
+
+        const debitAmt = debitMatch ? parseFloat(debitMatch[0].replace(/,/g, "")) : 0;
+        const creditAmt = creditMatch ? parseFloat(creditMatch[0].replace(/,/g, "")) : 0;
+
+        if (debitAmt <= 0 && creditAmt <= 0) continue;
+
+        if (debitAmt > 0) {
+          transactions.push({
+            id: uuidv4(),
+            type: "expense",
+            amount: debitAmt,
+            currency: getCurrency(),
+            category: "other",
+            description,
+            date,
+          });
+        }
+        if (creditAmt > 0) {
+          transactions.push({
+            id: uuidv4(),
+            type: "income",
+            amount: creditAmt,
+            currency: getCurrency(),
+            category: "other",
+            description,
+            date,
+          });
+        }
       }
     }
 
@@ -256,7 +289,7 @@ export default function ImportData({ onImport }: Props) {
     setEmailText("");
   }
 
-  const hasMapping = columnMap.includes("date") && (columnMap.includes("debit") || columnMap.includes("credit"));
+  const hasMapping = columnMap.includes("date") && (columnMap.includes("debit") || columnMap.includes("credit") || columnMap.includes("amount"));
 
   const modeButtons: { key: ImportMode; label: string }[] = [
     { key: "pdf", label: "PDF Statement" },
@@ -365,6 +398,8 @@ export default function ImportData({ onImport }: Props) {
                           columnMap[i] === "description" ? "bg-purple-50 border-purple-300 text-purple-700" :
                           columnMap[i] === "debit" ? "bg-red-50 border-red-300 text-red-700" :
                           columnMap[i] === "credit" ? "bg-emerald-50 border-emerald-300 text-emerald-700" :
+                          columnMap[i] === "amount" ? "bg-amber-50 border-amber-300 text-amber-700" :
+                          columnMap[i] === "type" ? "bg-indigo-50 border-indigo-300 text-indigo-700" :
                           "bg-white border-gray-200 text-gray-500"
                         }`}
                       >
@@ -415,8 +450,8 @@ export default function ImportData({ onImport }: Props) {
             className="w-full py-2.5 bg-emerald-500 text-white rounded-lg text-sm font-medium hover:bg-emerald-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {hasMapping
-              ? `Import Transactions`
-              : "Select Date + Debit/Credit columns to import"}
+              ? "Import Transactions"
+              : "Select Date + Debit/Credit (or Amount) columns"}
           </button>
         </div>
       )}

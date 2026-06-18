@@ -17,6 +17,9 @@ interface TextItem {
   y: number;
 }
 
+const DATE_REGEX = /\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}/;
+const HEADER_KEYWORDS = /date|particulars|narration|description|details|debit|credit|withdrawal|deposit|balance|amount|cheque|ref|chq|value|txn|transaction/i;
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -104,20 +107,30 @@ async function extractTable(
 
   allItems.sort((a, b) => a.y - b.y || a.x - b.x);
 
-  const yTolerance = 3;
-  const rawRows: TextItem[][] = [];
-  let rowStart = 0;
-  while (rowStart < allItems.length) {
-    const rowY = allItems[rowStart].y;
-    let rowEnd = rowStart + 1;
-    while (rowEnd < allItems.length && Math.abs(allItems[rowEnd].y - rowY) <= yTolerance) {
-      rowEnd++;
+  const rawRows = groupIntoRows(allItems);
+
+  const dateRowIndices: number[] = [];
+  for (let i = 0; i < rawRows.length; i++) {
+    const text = rawRows[i].map((item) => item.str).join(" ");
+    if (DATE_REGEX.test(text)) {
+      dateRowIndices.push(i);
     }
-    rawRows.push(allItems.slice(rowStart, rowEnd).sort((a, b) => a.x - b.x));
-    rowStart = rowEnd;
   }
 
-  const colBoundaries = findColumnBoundaries(rawRows);
+  if (dateRowIndices.length === 0) {
+    return { headers: [], rows: [], suggestions: {} };
+  }
+
+  const firstDateIdx = dateRowIndices[0];
+  const contextRows: TextItem[][] = [];
+  for (let i = Math.max(0, firstDateIdx - 5); i < firstDateIdx; i++) {
+    contextRows.push(rawRows[i]);
+  }
+  for (const idx of dateRowIndices) {
+    contextRows.push(rawRows[idx]);
+  }
+  const colBoundaries = findColumnBoundaries(contextRows, dateRowIndices.length);
+
   if (colBoundaries.length === 0) {
     return { headers: [], rows: [], suggestions: {} };
   }
@@ -125,39 +138,88 @@ async function extractTable(
   function assignToColumn(x: number): number {
     let best = 0;
     let bestDist = Math.abs(x - colBoundaries[0]);
-    for (let i = 1; i < colBoundaries.length; i++) {
-      const d = Math.abs(x - colBoundaries[i]);
+    for (let k = 1; k < colBoundaries.length; k++) {
+      const d = Math.abs(x - colBoundaries[k]);
       if (d < bestDist) {
         bestDist = d;
-        best = i;
+        best = k;
       }
     }
     return best;
   }
 
-  const gridRows: string[][] = [];
-  for (const rawRow of rawRows) {
+  function rowToGrid(items: TextItem[]): string[] {
     const row = new Array(colBoundaries.length).fill("");
-    for (const item of rawRow) {
+    for (const item of items) {
       const col = assignToColumn(item.x);
       row[col] = row[col] ? row[col] + " " + item.str : item.str;
     }
-    gridRows.push(row);
+    return row;
   }
 
-  const { headerIdx, headers } = detectHeaderRow(gridRows, colBoundaries.length);
-  const dataRows = gridRows.slice(headerIdx + 1).filter((row) =>
-    row.some((cell) => cell.trim().length > 0)
-  );
+  let headerRow: string[] | null = null;
+  for (let i = firstDateIdx - 1; i >= Math.max(0, firstDateIdx - 10); i--) {
+    const text = rawRows[i].map((item) => item.str).join(" ");
+    const matches = rawRows[i].filter((item) => HEADER_KEYWORDS.test(item.str)).length;
+    if (matches >= 2 || (matches >= 1 && HEADER_KEYWORDS.test(text))) {
+      headerRow = rowToGrid(rawRows[i]);
+      break;
+    }
+  }
 
-  const suggestions = suggestMappings(headers);
+  if (!headerRow) {
+    headerRow = Array.from({ length: colBoundaries.length }, (_, i) => `Column ${i + 1}`);
+  }
 
-  return { headers, rows: dataRows, suggestions };
+  const dataRows: string[][] = [];
+  for (let di = 0; di < dateRowIndices.length; di++) {
+    const idx = dateRowIndices[di];
+    const gridRow = rowToGrid(rawRows[idx]);
+
+    const nextDateIdx = di + 1 < dateRowIndices.length ? dateRowIndices[di + 1] : rawRows.length;
+    for (let ci = idx + 1; ci < nextDateIdx && ci < idx + 3; ci++) {
+      const contText = rawRows[ci].map((item) => item.str).join(" ");
+      if (DATE_REGEX.test(contText)) break;
+      if (rawRows[ci].length === 0) continue;
+
+      const contGrid = rowToGrid(rawRows[ci]);
+      for (let c = 0; c < contGrid.length; c++) {
+        if (contGrid[c] && !contGrid[c].match(/^\d{1,3}(,\d{2,3})*\.\d{1,2}$/)) {
+          gridRow[c] = gridRow[c] ? gridRow[c] + " " + contGrid[c] : contGrid[c];
+        }
+      }
+    }
+
+    dataRows.push(gridRow);
+  }
+
+  const suggestions = suggestMappings(headerRow);
+
+  return { headers: headerRow, rows: dataRows, suggestions };
 }
 
-function findColumnBoundaries(rawRows: TextItem[][]): number[] {
+function groupIntoRows(items: TextItem[]): TextItem[][] {
+  if (items.length === 0) return [];
+
+  const rows: TextItem[][] = [];
+  let rowStart = 0;
+
+  while (rowStart < items.length) {
+    const rowY = items[rowStart].y;
+    let rowEnd = rowStart + 1;
+    while (rowEnd < items.length && Math.abs(items[rowEnd].y - rowY) <= 3) {
+      rowEnd++;
+    }
+    rows.push(items.slice(rowStart, rowEnd).sort((a, b) => a.x - b.x));
+    rowStart = rowEnd;
+  }
+
+  return rows;
+}
+
+function findColumnBoundaries(allRows: TextItem[][], dateRowCount: number): number[] {
   const xValues: number[] = [];
-  for (const row of rawRows) {
+  for (const row of allRows) {
     for (const item of row) {
       xValues.push(item.x);
     }
@@ -166,76 +228,50 @@ function findColumnBoundaries(rawRows: TextItem[][]): number[] {
 
   xValues.sort((a, b) => a - b);
 
-  const bucketSize = 8;
-  const buckets: Map<number, number[]> = new Map();
-  for (const x of xValues) {
-    const key = Math.round(x / bucketSize) * bucketSize;
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key)!.push(x);
-  }
+  const gap = 20;
+  const clusters: { sum: number; count: number }[] = [];
+  let clusterSum = xValues[0];
+  let clusterCount = 1;
 
-  const clusters: { center: number; count: number }[] = [];
-  const sorted = [...buckets.entries()].sort((a, b) => a[0] - b[0]);
-
-  let i = 0;
-  while (i < sorted.length) {
-    let j = i;
-    let totalX = 0;
-    let totalCount = 0;
-    while (j < sorted.length && sorted[j][0] - sorted[i][0] <= bucketSize * 2) {
-      const vals = sorted[j][1];
-      totalX += vals.reduce((a, b) => a + b, 0);
-      totalCount += vals.length;
-      j++;
+  for (let i = 1; i < xValues.length; i++) {
+    if (xValues[i] - xValues[i - 1] <= gap) {
+      clusterSum += xValues[i];
+      clusterCount++;
+    } else {
+      clusters.push({ sum: clusterSum, count: clusterCount });
+      clusterSum = xValues[i];
+      clusterCount = 1;
     }
-    clusters.push({ center: totalX / totalCount, count: totalCount });
-    i = j;
   }
+  clusters.push({ sum: clusterSum, count: clusterCount });
 
-  const minCount = Math.max(2, rawRows.length * 0.05);
+  const minCount = Math.max(1, Math.floor(dateRowCount * 0.1));
+
   return clusters
     .filter((c) => c.count >= minCount)
-    .map((c) => c.center);
-}
-
-function detectHeaderRow(
-  gridRows: string[][],
-  colCount: number
-): { headerIdx: number; headers: string[] } {
-  const headerKeywords = /date|particulars|narration|description|details|debit|credit|withdrawal|deposit|balance|amount|cheque|ref|chq|value|txn|transaction|dr|cr/i;
-
-  for (let i = 0; i < Math.min(gridRows.length, 30); i++) {
-    const row = gridRows[i];
-    const nonEmpty = row.filter((c) => c.trim().length > 0);
-    if (nonEmpty.length < 3) continue;
-
-    const matchCount = row.filter((c) => headerKeywords.test(c.trim())).length;
-    if (matchCount >= 2) {
-      return { headerIdx: i, headers: row.map((c) => c.trim()) };
-    }
-  }
-
-  return {
-    headerIdx: -1,
-    headers: Array.from({ length: colCount }, (_, i) => `Column ${i + 1}`),
-  };
+    .map((c) => c.sum / c.count);
 }
 
 function suggestMappings(headers: string[]): Record<string, number> {
   const suggestions: Record<string, number> = {};
 
-  const datePattern = /^(date|txn\s*date|transaction\s*date|value\s*date|post\s*date)$/i;
-  const descPattern = /^(particulars|narration|description|details|transaction\s*details?|remark|memo)$/i;
-  const debitPattern = /^(debit|withdrawal|dr\.?|debit\s*am(oun)?t|withdrawal\s*am(oun)?t|money\s*out|outflow|debit\s*\(dr\))$/i;
-  const creditPattern = /^(credit|deposit|cr\.?|credit\s*am(oun)?t|deposit\s*am(oun)?t|money\s*in|inflow|credit\s*\(cr\))$/i;
+  const isDrCrCombo = (h: string) => /dr\s*\/\s*cr|cr\s*\/\s*dr|type/i.test(h);
+
+  const patterns: [string, (h: string) => boolean][] = [
+    ["date", (h) => /date|txn\s*date|transaction\s*date|value\s*date|post\s*date/i.test(h)],
+    ["description", (h) => /particulars|narration|description|details|transaction\s*details?|remark|memo/i.test(h)],
+    ["debit", (h) => !isDrCrCombo(h) && /debit|withdrawal|debit\s*am|withdrawal\s*am|money\s*out|outflow/i.test(h)],
+    ["credit", (h) => !isDrCrCombo(h) && /credit|deposit|credit\s*am|deposit\s*am|money\s*in|inflow/i.test(h)],
+  ];
 
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i].trim();
     if (!h) continue;
-    if (datePattern.test(h) && suggestions.date === undefined) suggestions.date = i;
-    if (descPattern.test(h) && suggestions.description === undefined) suggestions.description = i;
-    if (debitPattern.test(h) && suggestions.debit === undefined) suggestions.debit = i;
-    if (creditPattern.test(h) && suggestions.credit === undefined) suggestions.credit = i;
+    for (const [key, test] of patterns) {
+      if (test(h) && suggestions[key] === undefined) {
+        suggestions[key] = i;
+      }
+    }
   }
 
   return suggestions;
