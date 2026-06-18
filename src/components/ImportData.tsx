@@ -70,7 +70,8 @@ export default function ImportData({ onImport }: Props) {
           setError(pdfPassword ? "Incorrect password. Please try again." : "This PDF is password-protected. Enter the password and click Parse.");
           return;
         }
-        throw new Error(data.error || "Failed to parse PDF");
+        const debugMsg = data.debug ? ` [${data.debug.name}: ${data.debug.message}]` : "";
+        throw new Error((data.error || "Failed to parse PDF") + debugMsg);
       }
 
       setNeedsPassword(false);
