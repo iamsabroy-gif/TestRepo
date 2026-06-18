@@ -105,7 +105,7 @@ export default function Home() {
               <option value="INR">INR</option>
               <option value="USD">$ USD</option>
             </select>
-            <ExportButton targetRef={reportRef} filename={`expenses-${monthKey}`} />
+            <ExportButton targetRef={reportRef} filename={`expenses-${monthKey}`} transactions={filtered} />
             <div className="flex items-center gap-2">
               {userEmail && (
                 <span className="text-xs text-gray-500 hidden sm:inline max-w-[120px] truncate">
