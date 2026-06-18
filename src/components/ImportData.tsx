@@ -19,6 +19,9 @@ export default function ImportData({ onImport }: Props) {
   const [showPreview, setShowPreview] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pdfPassword, setPdfPassword] = useState("");
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -41,32 +44,49 @@ export default function ImportData({ onImport }: Props) {
     }
   }
 
-  async function handlePdfUpload(file: File) {
+  async function handlePdfUpload(file: File, password?: string) {
     setLoading(true);
     setError(null);
+    setNeedsPassword(false);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
+      if (password) formData.append("password", password);
 
       const res = await fetch("/api/parse-pdf", {
         method: "POST",
         body: formData,
       });
 
+      const data = await res.json().catch(() => ({}));
+
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        if (data.needsPassword) {
+          setPendingPdfFile(file);
+          setNeedsPassword(true);
+          setError(password ? "Incorrect password. Please try again." : null);
+          return;
+        }
         throw new Error(data.error || "Failed to parse PDF");
       }
 
-      const data = await res.json();
       setPreview(data.transactions || []);
       setShowPreview(true);
+      setPendingPdfFile(null);
+      setNeedsPassword(false);
+      setPdfPassword("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse PDF");
     } finally {
       setLoading(false);
     }
+  }
+
+  function handlePasswordSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pendingPdfFile || !pdfPassword) return;
+    handlePdfUpload(pendingPdfFile, pdfPassword);
   }
 
   function handleEmailParse() {
@@ -91,6 +111,9 @@ export default function ImportData({ onImport }: Props) {
     setShowPreview(false);
     setEmailText("");
     setError(null);
+    setNeedsPassword(false);
+    setPdfPassword("");
+    setPendingPdfFile(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -109,7 +132,7 @@ export default function ImportData({ onImport }: Props) {
           <button
             key={m.key}
             type="button"
-            onClick={() => { setMode(m.key); setShowPreview(false); setError(null); }}
+            onClick={() => { setMode(m.key); setShowPreview(false); setError(null); setNeedsPassword(false); setPdfPassword(""); setPendingPdfFile(null); }}
             className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
               mode === m.key ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
             }`}
@@ -122,7 +145,7 @@ export default function ImportData({ onImport }: Props) {
       {mode === "pdf" && (
         <div>
           <p className="text-xs text-gray-500 mb-2">
-            Upload your bank statement PDF. Supports Federal Bank, Bandhan Bank, ICICI, SBI, HDFC, and other Indian bank formats. The file must not be password-protected.
+            Upload your bank statement PDF. Supports Federal Bank, Bandhan Bank, ICICI, SBI, HDFC, and other Indian bank formats. Password-protected PDFs are supported.
           </p>
           <input
             ref={fileInputRef}
@@ -132,13 +155,42 @@ export default function ImportData({ onImport }: Props) {
             disabled={loading}
             className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
           />
+          {needsPassword && (
+            <form onSubmit={handlePasswordSubmit} className="mt-3 space-y-2">
+              <div className="flex items-start gap-2 p-3 bg-amber-50 rounded-lg">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                </svg>
+                <p className="text-xs text-amber-700">
+                  This PDF is password-protected. Most Indian banks use your <strong>date of birth (DDMMYYYY)</strong> or <strong>customer ID</strong> as the password.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={pdfPassword}
+                  onChange={(e) => setPdfPassword(e.target.value)}
+                  placeholder="Enter PDF password"
+                  className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-gray-800"
+                  autoFocus
+                />
+                <button
+                  type="submit"
+                  disabled={!pdfPassword || loading}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Unlock
+                </button>
+              </div>
+            </form>
+          )}
           {loading && (
             <div className="flex items-center gap-2 mt-2 text-sm text-gray-500">
               <svg className="w-4 h-4 animate-spin text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              Parsing PDF...
+              {needsPassword ? "Unlocking PDF..." : "Parsing PDF..."}
             </div>
           )}
         </div>

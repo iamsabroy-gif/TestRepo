@@ -12,6 +12,7 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
+    const password = (formData.get("password") as string) || undefined;
 
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const data = new Uint8Array(arrayBuffer);
 
-    const parser = new PDFParse({ data });
+    const parser = new PDFParse({ data, password });
     const textResult = await parser.getText();
     const text = textResult.text;
     await parser.destroy();
@@ -34,9 +35,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ transactions, rawText: text.substring(0, 2000) });
   } catch (error) {
     console.error("PDF parse error:", error);
+    const message = error instanceof Error ? error.message : "";
+    const isPasswordError = /password|encrypted|decrypt/i.test(message);
     return NextResponse.json(
-      { error: "Failed to parse PDF. The file may be password-protected or corrupted." },
-      { status: 500 }
+      {
+        error: isPasswordError
+          ? "Incorrect password or the PDF requires a password to open."
+          : "Failed to parse PDF. The file may be corrupted or in an unsupported format.",
+        needsPassword: isPasswordError,
+      },
+      { status: isPasswordError ? 401 : 500 }
     );
   }
 }
