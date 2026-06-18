@@ -23,8 +23,7 @@ async function extractText(data: Uint8Array, password?: string): Promise<string>
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
   Object.defineProperty(pdfjsLib.PDFWorker, "_setupFakeWorkerGlobal", {
-    value: async () => pdfjsWorker,
-    writable: true,
+    get: () => Promise.resolve(pdfjsWorker),
     configurable: true,
   });
 
@@ -57,8 +56,7 @@ export async function GET() {
     const pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
     Object.defineProperty(pdfjsLib.PDFWorker, "_setupFakeWorkerGlobal", {
-    value: async () => pdfjsWorker,
-    writable: true,
+    get: () => Promise.resolve(pdfjsWorker),
     configurable: true,
   });
     return NextResponse.json({
