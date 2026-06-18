@@ -23,10 +23,10 @@ const COLUMN_ROLES: { value: ColumnRole; label: string; desc: string }[] = [
   { value: "ignore", label: "Skip", desc: "" },
   { value: "date", label: "Date", desc: "" },
   { value: "description", label: "Description", desc: "" },
-  { value: "debit", label: "Debit (Expense)", desc: "" },
-  { value: "credit", label: "Credit (Income)", desc: "" },
-  { value: "amount", label: "Amount", desc: "Use with Dr/Cr Type" },
-  { value: "type", label: "Dr/Cr Type", desc: "Use with Amount" },
+  { value: "debit", label: "Debit (Expense)", desc: "Only expense amounts" },
+  { value: "credit", label: "Credit (Income)", desc: "Only income amounts" },
+  { value: "amount", label: "Amount (Both)", desc: "Single column with Dr & Cr" },
+  { value: "type", label: "Dr/Cr Type", desc: "Optional: helps classify Amount" },
 ];
 
 function normalizeDate(dateStr: string): string {
@@ -133,10 +133,13 @@ export default function ImportData({ onImport }: Props) {
       setPdfTable(table);
 
       const initialMap: ColumnRole[] = table.headers.map(() => "ignore" as ColumnRole);
-      if (table.suggestions.date !== undefined) initialMap[table.suggestions.date] = "date";
-      if (table.suggestions.description !== undefined) initialMap[table.suggestions.description] = "description";
-      if (table.suggestions.debit !== undefined) initialMap[table.suggestions.debit] = "debit";
-      if (table.suggestions.credit !== undefined) initialMap[table.suggestions.credit] = "credit";
+      const s = table.suggestions;
+      if (s.date !== undefined) initialMap[s.date] = "date";
+      if (s.description !== undefined) initialMap[s.description] = "description";
+      if (s.debit !== undefined) initialMap[s.debit] = "debit";
+      if (s.credit !== undefined) initialMap[s.credit] = "credit";
+      if (s.amount !== undefined) initialMap[s.amount] = "amount";
+      if (s.type !== undefined) initialMap[s.type] = "type";
       setColumnMap(initialMap);
 
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -160,6 +163,35 @@ export default function ImportData({ onImport }: Props) {
     });
   }
 
+  function detectTransactionType(
+    amountCell: string,
+    row: string[],
+    typeIdx: number,
+    descIdx: number,
+    description: string
+  ): "income" | "expense" {
+    const creditIndicator = /\bcr\.?\b|credit|deposit|credited|received/i;
+    const debitIndicator = /\bdr\.?\b|debit|withdrawal|debited|paid/i;
+    const creditKeywords = /credit|cr\b|deposit|received|salary|refund|cashback|reversal|interest|neft.*from|upi.*from|imps.*from|upi\/cr/i;
+    const debitKeywords = /debit|dr\b|paid|withdraw|purchase|upi.*to|neft.*to|imps.*to|emi|charge|fee|upi\/dr/i;
+
+    if (typeIdx !== -1) {
+      const typeVal = (row[typeIdx] || "").trim();
+      if (creditIndicator.test(typeVal)) return "income";
+      if (debitIndicator.test(typeVal)) return "expense";
+    }
+
+    if (creditIndicator.test(amountCell) && !debitIndicator.test(amountCell)) return "income";
+    if (debitIndicator.test(amountCell) && !creditIndicator.test(amountCell)) return "expense";
+
+    const rowText = row.join(" ");
+    if (creditKeywords.test(description) && !debitKeywords.test(description)) return "income";
+    if (debitKeywords.test(description) && !creditKeywords.test(description)) return "expense";
+    if (creditKeywords.test(rowText) && !debitKeywords.test(rowText)) return "income";
+
+    return "expense";
+  }
+
   function handleImportMapped() {
     if (!pdfTable) return;
 
@@ -179,7 +211,7 @@ export default function ImportData({ onImport }: Props) {
     const hasSingleCol = amountIdx !== -1;
 
     if (!hasDualCols && !hasSingleCol) {
-      setError("Please select Debit/Credit columns, or use Amount + Dr/Cr Type.");
+      setError("Please select Debit/Credit columns, or use \"Amount (Both)\" for a single column.");
       return;
     }
 
@@ -204,13 +236,7 @@ export default function ImportData({ onImport }: Props) {
         const amt = amtMatch ? parseFloat(amtMatch[0].replace(/,/g, "")) : 0;
         if (amt <= 0) continue;
 
-        let txnType: "income" | "expense" = "expense";
-        if (typeIdx !== -1) {
-          const typeVal = (row[typeIdx] || "").trim().toLowerCase();
-          if (/^(cr\.?|credit|c|deposit)$/i.test(typeVal)) txnType = "income";
-        } else {
-          if (/credit|cr\b|deposit|received|salary|refund|cashback/i.test(description)) txnType = "income";
-        }
+        const txnType = detectTransactionType(rawAmt, row, typeIdx, descIdx, description);
 
         transactions.push({
           id: uuidv4(),
@@ -381,7 +407,7 @@ export default function ImportData({ onImport }: Props) {
           </div>
 
           <p className="text-xs text-gray-500">
-            Select the role for each column using the dropdowns. Assign Date, Description, Debit, and Credit.
+            Assign each column a role. Use <b>Debit + Credit</b> if they are separate columns, or <b>Amount (Both)</b> if debits and credits are in the same column.
           </p>
 
           <div className="overflow-x-auto border border-gray-200 rounded-lg">

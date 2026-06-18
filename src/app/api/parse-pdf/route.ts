@@ -255,13 +255,15 @@ function findColumnBoundaries(allRows: TextItem[][], dateRowCount: number): numb
 function suggestMappings(headers: string[]): Record<string, number> {
   const suggestions: Record<string, number> = {};
 
-  const isDrCrCombo = (h: string) => /dr\s*\/\s*cr|cr\s*\/\s*dr|type/i.test(h);
+  const isDrCrCombo = (h: string) => /dr\s*\/\s*cr|cr\s*\/\s*dr/i.test(h);
 
   const patterns: [string, (h: string) => boolean][] = [
     ["date", (h) => /date|txn\s*date|transaction\s*date|value\s*date|post\s*date/i.test(h)],
     ["description", (h) => /particulars|narration|description|details|transaction\s*details?|remark|memo/i.test(h)],
     ["debit", (h) => !isDrCrCombo(h) && /debit|withdrawal|debit\s*am|withdrawal\s*am|money\s*out|outflow/i.test(h)],
     ["credit", (h) => !isDrCrCombo(h) && /credit|deposit|credit\s*am|deposit\s*am|money\s*in|inflow/i.test(h)],
+    ["amount", (h) => /^amount$|^txn\s*am|^transaction\s*am|^value$/i.test(h)],
+    ["type", (h) => isDrCrCombo(h) || /^type$|^txn\s*type$/i.test(h)],
   ];
 
   for (let i = 0; i < headers.length; i++) {
@@ -272,6 +274,11 @@ function suggestMappings(headers: string[]): Record<string, number> {
         suggestions[key] = i;
       }
     }
+  }
+
+  if (suggestions.debit !== undefined && suggestions.credit !== undefined) {
+    delete suggestions.amount;
+    delete suggestions.type;
   }
 
   return suggestions;
