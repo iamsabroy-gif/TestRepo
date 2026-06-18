@@ -159,9 +159,8 @@ async function extractTable(
 
   let headerRow: string[] | null = null;
   for (let i = firstDateIdx - 1; i >= Math.max(0, firstDateIdx - 10); i--) {
-    const text = rawRows[i].map((item) => item.str).join(" ");
     const matches = rawRows[i].filter((item) => HEADER_KEYWORDS.test(item.str)).length;
-    if (matches >= 2 || (matches >= 1 && HEADER_KEYWORDS.test(text))) {
+    if (matches >= 2) {
       headerRow = rowToGrid(rawRows[i]);
       break;
     }
@@ -193,9 +192,10 @@ async function extractTable(
     dataRows.push(gridRow);
   }
 
-  const suggestions = suggestMappings(headerRow);
+  const { cleanHeaders, cleanRows } = removeEmptyColumns(headerRow, dataRows);
+  const suggestions = suggestMappings(cleanHeaders);
 
-  return { headers: headerRow, rows: dataRows, suggestions };
+  return { headers: cleanHeaders, rows: cleanRows, suggestions };
 }
 
 function groupIntoRows(items: TextItem[]): TextItem[][] {
@@ -217,6 +217,26 @@ function groupIntoRows(items: TextItem[]): TextItem[][] {
   return rows;
 }
 
+function removeEmptyColumns(
+  headers: string[],
+  dataRows: string[][]
+): { cleanHeaders: string[]; cleanRows: string[][] } {
+  const keepCols: number[] = [];
+
+  for (let c = 0; c < headers.length; c++) {
+    const hasHeader = headers[c].trim().length > 0;
+    const filledCount = dataRows.filter((row) => row[c] && row[c].trim().length > 0).length;
+    if (hasHeader || filledCount >= Math.max(1, dataRows.length * 0.1)) {
+      keepCols.push(c);
+    }
+  }
+
+  return {
+    cleanHeaders: keepCols.map((c) => headers[c]),
+    cleanRows: dataRows.map((row) => keepCols.map((c) => row[c] || "")),
+  };
+}
+
 function findColumnBoundaries(allRows: TextItem[][], dateRowCount: number): number[] {
   const xValues: number[] = [];
   for (const row of allRows) {
@@ -228,7 +248,7 @@ function findColumnBoundaries(allRows: TextItem[][], dateRowCount: number): numb
 
   xValues.sort((a, b) => a - b);
 
-  const gap = 20;
+  const gap = 30;
   const clusters: { sum: number; count: number }[] = [];
   let clusterSum = xValues[0];
   let clusterCount = 1;
