@@ -36,19 +36,35 @@ async function extractText(data: Uint8Array, password?: string): Promise<string>
   if (password) params.password = password;
 
   const doc = await pdfjsLib.getDocument(params).promise;
-  const pages: string[] = [];
+  const allLines: string[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
-    const strings = content.items
-      .filter((item) => "str" in item && typeof (item as { str?: string }).str === "string")
-      .map((item) => (item as { str: string }).str);
-    pages.push(strings.join(" "));
+
+    const items: { str: string; x: number; y: number }[] = [];
+    for (const item of content.items) {
+      if (!("str" in item) || !(item as { str?: string }).str) continue;
+      const t = item as { str: string; transform: number[] };
+      items.push({ str: t.str, x: t.transform[4], y: Math.round(t.transform[5]) });
+    }
+
+    const rows = new Map<number, { str: string; x: number }[]>();
+    for (const item of items) {
+      if (!rows.has(item.y)) rows.set(item.y, []);
+      rows.get(item.y)!.push({ str: item.str, x: item.x });
+    }
+
+    const sortedYs = [...rows.keys()].sort((a, b) => b - a);
+    for (const y of sortedYs) {
+      const cells = rows.get(y)!.sort((a, b) => a.x - b.x);
+      const line = cells.map((c) => c.str).join(" \t ");
+      allLines.push(line);
+    }
   }
 
   await doc.destroy();
-  return pages.join("\n");
+  return allLines.join("\n");
 }
 
 export async function GET() {
@@ -113,11 +129,30 @@ export async function POST(request: NextRequest) {
   }
 }
 
+function detectHeaderColumns(lines: string[]): { debitIdx: number; creditIdx: number } | null {
+  for (const line of lines.slice(0, 20)) {
+    const lower = line.toLowerCase();
+    if (/debit|withdrawal/i.test(lower) && /credit|deposit/i.test(lower)) {
+      const parts = line.split(/\t/);
+      let debitIdx = -1;
+      let creditIdx = -1;
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i].trim().toLowerCase();
+        if (/debit|withdrawal|dr/i.test(p) && debitIdx === -1) debitIdx = i;
+        if (/credit|deposit|cr/i.test(p) && creditIdx === -1) creditIdx = i;
+      }
+      if (debitIdx >= 0 && creditIdx >= 0) return { debitIdx, creditIdx };
+    }
+  }
+  return null;
+}
+
 function parseBankStatementText(text: string): ParsedRow[] {
   const results: ParsedRow[] = [];
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
-  const datePattern = /^(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/;
+  const datePattern = /(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/;
+  const headerCols = detectHeaderColumns(lines);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -127,44 +162,71 @@ function parseBankStatementText(text: string): ParsedRow[] {
     const date = normalizeDate(dateMatch[1]);
     if (!date) continue;
 
-    const restOfLine = line.substring(dateMatch[0].length);
-    const amounts: number[] = [];
-    const amountRegex = /(\d{1,3}(?:,\d{2,3})*\.\d{1,2})/g;
-    let match;
-    while ((match = amountRegex.exec(restOfLine)) !== null) {
-      const val = parseFloat(match[1].replace(/,/g, ""));
-      if (val > 0) amounts.push(val);
+    const parts = line.split(/\t/);
+    const amounts: { value: number; colIdx: number }[] = [];
+    const amountRegex = /(\d{1,3}(?:,\d{2,3})*\.\d{1,2})/;
+
+    for (let j = 0; j < parts.length; j++) {
+      const m = parts[j].trim().match(amountRegex);
+      if (m) {
+        const val = parseFloat(m[1].replace(/,/g, ""));
+        if (val > 0) amounts.push({ value: val, colIdx: j });
+      }
     }
 
-    const firstAmountIdx = restOfLine.search(/\d{1,3}(?:,\d{2,3})*\.\d{1,2}/);
-    let description = firstAmountIdx > 0
-      ? restOfLine.substring(0, firstAmountIdx).trim()
-      : restOfLine.trim();
-
+    let description = "";
+    for (const p of parts) {
+      const trimmed = p.trim();
+      if (trimmed && !amountRegex.test(trimmed) && !datePattern.test(trimmed)) {
+        description += (description ? " " : "") + trimmed;
+      }
+    }
     if (description.length < 5 && i + 1 < lines.length && !lines[i + 1].match(datePattern)) {
-      description += " " + lines[i + 1].trim();
+      const nextNonAmount = lines[i + 1].split(/\t/)
+        .map((p) => p.trim())
+        .filter((p) => p && !amountRegex.test(p) && !datePattern.test(p))
+        .join(" ");
+      if (nextNonAmount) description += " " + nextNonAmount;
     }
-
     description = description.replace(/\s+/g, " ").substring(0, 100).trim();
     if (!description) description = "Bank transaction";
 
-    if (amounts.length >= 3) {
-      const debit = amounts[0];
-      const credit = amounts[1];
+    if (amounts.length === 0) continue;
+
+    if (headerCols && amounts.length >= 2) {
+      const debitAmt = amounts.find((a) => a.colIdx === headerCols.debitIdx);
+      const creditAmt = amounts.find((a) => a.colIdx === headerCols.creditIdx);
+      if (creditAmt && !debitAmt) {
+        results.push({ date, description, amount: creditAmt.value, type: "income" });
+      } else if (debitAmt && !creditAmt) {
+        results.push({ date, description, amount: debitAmt.value, type: "expense" });
+      } else if (debitAmt && creditAmt) {
+        if (creditAmt.value > debitAmt.value) {
+          results.push({ date, description, amount: creditAmt.value, type: "income" });
+        } else {
+          results.push({ date, description, amount: debitAmt.value, type: "expense" });
+        }
+      }
+    } else if (amounts.length >= 3) {
+      const debit = amounts[0].value;
+      const credit = amounts[1].value;
       if (credit > debit && credit > 0) {
         results.push({ date, description, amount: credit, type: "income" });
       } else if (debit > 0) {
         results.push({ date, description, amount: debit, type: "expense" });
       }
     } else if (amounts.length === 2) {
-      const amount = amounts[0];
-      const isCredit = /credit|cr\b|deposit|received|neft.*from|upi.*from|imps.*from|interest/i.test(line);
-      if (amount > 0) {
-        results.push({ date, description, amount, type: isCredit ? "income" : "expense" });
+      const isCredit = /credit|cr\b|deposit|received|neft.*from|upi.*from|imps.*from|interest|salary|refund/i.test(line);
+      const isDebit = /debit|dr\b|paid|withdraw|purchase|upi.*to|neft.*to|imps.*to|emi|charge|fee/i.test(line);
+      const amount = amounts[0].value;
+      if (isCredit && !isDebit) {
+        results.push({ date, description, amount, type: "income" });
+      } else {
+        results.push({ date, description, amount, type: "expense" });
       }
-    } else if (amounts.length === 1) {
-      const isCredit = /credit|cr\b|deposit|received|interest|salary|refund/i.test(line);
-      results.push({ date, description, amount: amounts[0], type: isCredit ? "income" : "expense" });
+    } else {
+      const isCredit = /credit|cr\b|deposit|received|interest|salary|refund|cashback|reversal/i.test(line);
+      results.push({ date, description, amount: amounts[0].value, type: isCredit ? "income" : "expense" });
     }
   }
 
