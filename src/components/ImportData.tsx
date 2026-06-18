@@ -11,6 +11,33 @@ interface Props {
 }
 
 type ImportMode = "pdf" | "csv" | "email";
+type ColumnRole = "ignore" | "date" | "description" | "debit" | "credit";
+
+interface PdfTable {
+  headers: string[];
+  rows: string[][];
+  suggestions: Record<string, number>;
+}
+
+const COLUMN_ROLES: { value: ColumnRole; label: string }[] = [
+  { value: "ignore", label: "Skip" },
+  { value: "date", label: "Date" },
+  { value: "description", label: "Description" },
+  { value: "debit", label: "Debit (Expense)" },
+  { value: "credit", label: "Credit (Income)" },
+];
+
+function normalizeDate(dateStr: string): string {
+  const cleaned = dateStr.trim();
+  const parts = cleaned.split(/[-/.]/);
+  if (parts.length !== 3) return "";
+  let [a, b, c] = parts.map(Number);
+  if (isNaN(a) || isNaN(b) || isNaN(c)) return "";
+  if (c < 100) c += 2000;
+  if (a > 31) return `${a}-${String(b).padStart(2, "0")}-${String(c).padStart(2, "0")}`;
+  if (b > 12) return `${c}-${String(a).padStart(2, "0")}-${String(b).padStart(2, "0")}`;
+  return `${c}-${String(b).padStart(2, "0")}-${String(a).padStart(2, "0")}`;
+}
 
 export default function ImportData({ onImport }: Props) {
   const [mode, setMode] = useState<ImportMode>("pdf");
@@ -24,12 +51,30 @@ export default function ImportData({ onImport }: Props) {
   const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [pdfTable, setPdfTable] = useState<PdfTable | null>(null);
+  const [columnMap, setColumnMap] = useState<ColumnRole[]>([]);
+
+  function resetState() {
+    setPreview([]);
+    setShowPreview(false);
+    setError(null);
+    setNeedsPassword(false);
+    setPdfPassword("");
+    setPendingPdfFile(null);
+    setPdfTable(null);
+    setColumnMap([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setError(null);
     setNeedsPassword(false);
+    setPdfTable(null);
+    setColumnMap([]);
+    setShowPreview(false);
 
     if (file.name.toLowerCase().endsWith(".pdf")) {
       setPendingPdfFile(file);
@@ -70,21 +115,123 @@ export default function ImportData({ onImport }: Props) {
           setError(pdfPassword ? "Incorrect password. Please try again." : "This PDF is password-protected. Enter the password and click Parse.");
           return;
         }
-        const debugMsg = data.debug ? ` [${data.debug.name}: ${data.debug.message}]` : "";
-        throw new Error((data.error || "Failed to parse PDF") + debugMsg);
+        throw new Error(data.error || "Failed to parse PDF");
       }
 
       setNeedsPassword(false);
       setPendingPdfFile(null);
       setPdfPassword("");
-      setPreview(data.transactions || []);
-      setShowPreview(true);
+
+      const table = data as PdfTable;
+      if (!table.headers || table.headers.length === 0 || !table.rows || table.rows.length === 0) {
+        setError("No table data found in this PDF. It may be image-based (scanned) or in an unsupported format.");
+        return;
+      }
+
+      setPdfTable(table);
+
+      const initialMap: ColumnRole[] = table.headers.map(() => "ignore" as ColumnRole);
+      if (table.suggestions.date !== undefined) initialMap[table.suggestions.date] = "date";
+      if (table.suggestions.description !== undefined) initialMap[table.suggestions.description] = "description";
+      if (table.suggestions.debit !== undefined) initialMap[table.suggestions.debit] = "debit";
+      if (table.suggestions.credit !== undefined) initialMap[table.suggestions.credit] = "credit";
+      setColumnMap(initialMap);
+
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse PDF");
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleColumnChange(colIdx: number, role: ColumnRole) {
+    setColumnMap((prev) => {
+      const next = [...prev];
+      if (role !== "ignore") {
+        for (let i = 0; i < next.length; i++) {
+          if (next[i] === role) next[i] = "ignore";
+        }
+      }
+      next[colIdx] = role;
+      return next;
+    });
+  }
+
+  function handleImportMapped() {
+    if (!pdfTable) return;
+
+    const dateIdx = columnMap.indexOf("date");
+    const descIdx = columnMap.indexOf("description");
+    const debitIdx = columnMap.indexOf("debit");
+    const creditIdx = columnMap.indexOf("credit");
+
+    if (dateIdx === -1) {
+      setError("Please select which column contains the Date.");
+      return;
+    }
+    if (debitIdx === -1 && creditIdx === -1) {
+      setError("Please select at least a Debit or Credit column.");
+      return;
+    }
+
+    const amountRegex = /[\d,]+\.?\d*/;
+    const dateRegex = /\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}/;
+    const transactions: Transaction[] = [];
+
+    for (const row of pdfTable.rows) {
+      const rawDate = row[dateIdx] || "";
+      const dateMatch = rawDate.match(dateRegex);
+      if (!dateMatch) continue;
+      const date = normalizeDate(dateMatch[0]);
+      if (!date) continue;
+
+      const description = descIdx >= 0
+        ? (row[descIdx] || "").replace(/\s+/g, " ").trim().substring(0, 100) || "Bank transaction"
+        : "Bank transaction";
+
+      const rawDebit = debitIdx >= 0 ? (row[debitIdx] || "").trim() : "";
+      const rawCredit = creditIdx >= 0 ? (row[creditIdx] || "").trim() : "";
+
+      const debitMatch = rawDebit.match(amountRegex);
+      const creditMatch = rawCredit.match(amountRegex);
+
+      const debitAmt = debitMatch ? parseFloat(debitMatch[0].replace(/,/g, "")) : 0;
+      const creditAmt = creditMatch ? parseFloat(creditMatch[0].replace(/,/g, "")) : 0;
+
+      if (debitAmt <= 0 && creditAmt <= 0) continue;
+
+      if (debitAmt > 0) {
+        transactions.push({
+          id: uuidv4(),
+          type: "expense",
+          amount: debitAmt,
+          currency: getCurrency(),
+          category: "other",
+          description,
+          date,
+        });
+      }
+      if (creditAmt > 0) {
+        transactions.push({
+          id: uuidv4(),
+          type: "income",
+          amount: creditAmt,
+          currency: getCurrency(),
+          category: "other",
+          description,
+          date,
+        });
+      }
+    }
+
+    if (transactions.length === 0) {
+      setError("No valid transactions found with the selected column mapping. Please check your selections.");
+      return;
+    }
+
+    onImport(transactions);
+    resetState();
   }
 
   function handleEmailParse() {
@@ -105,15 +252,11 @@ export default function ImportData({ onImport }: Props) {
       date: p.date,
     }));
     onImport(transactions);
-    setPreview([]);
-    setShowPreview(false);
+    resetState();
     setEmailText("");
-    setError(null);
-    setNeedsPassword(false);
-    setPdfPassword("");
-    setPendingPdfFile(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
   }
+
+  const hasMapping = columnMap.includes("date") && (columnMap.includes("debit") || columnMap.includes("credit"));
 
   const modeButtons: { key: ImportMode; label: string }[] = [
     { key: "pdf", label: "PDF Statement" },
@@ -130,7 +273,7 @@ export default function ImportData({ onImport }: Props) {
           <button
             key={m.key}
             type="button"
-            onClick={() => { setMode(m.key); setShowPreview(false); setError(null); setNeedsPassword(false); }}
+            onClick={() => { setMode(m.key); setShowPreview(false); setError(null); setNeedsPassword(false); setPdfTable(null); }}
             className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
               mode === m.key ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
             }`}
@@ -140,10 +283,10 @@ export default function ImportData({ onImport }: Props) {
         ))}
       </div>
 
-      {mode === "pdf" && (
+      {mode === "pdf" && !pdfTable && (
         <div className="space-y-3">
           <p className="text-xs text-gray-500">
-            Upload your bank statement PDF. Supports Federal Bank, Bandhan Bank, ICICI, SBI, HDFC, and other Indian bank formats.
+            Upload your bank statement PDF. You will be able to map the columns (Date, Description, Debit, Credit) after parsing.
           </p>
           <input
             ref={fileInputRef}
@@ -187,6 +330,94 @@ export default function ImportData({ onImport }: Props) {
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {mode === "pdf" && pdfTable && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-700">
+              Map columns from your statement
+            </h3>
+            <button
+              onClick={resetState}
+              className="text-xs text-gray-500 hover:text-gray-700 underline"
+            >
+              Start over
+            </button>
+          </div>
+
+          <p className="text-xs text-gray-500">
+            Select the role for each column using the dropdowns. Assign Date, Description, Debit, and Credit.
+          </p>
+
+          <div className="overflow-x-auto border border-gray-200 rounded-lg">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50">
+                  {pdfTable.headers.map((header, i) => (
+                    <th key={i} className="px-2 py-1 border-b border-gray-200 text-left min-w-[100px]">
+                      <select
+                        value={columnMap[i] || "ignore"}
+                        onChange={(e) => handleColumnChange(i, e.target.value as ColumnRole)}
+                        className={`w-full px-1.5 py-1 rounded text-xs font-medium border outline-none ${
+                          columnMap[i] === "date" ? "bg-blue-50 border-blue-300 text-blue-700" :
+                          columnMap[i] === "description" ? "bg-purple-50 border-purple-300 text-purple-700" :
+                          columnMap[i] === "debit" ? "bg-red-50 border-red-300 text-red-700" :
+                          columnMap[i] === "credit" ? "bg-emerald-50 border-emerald-300 text-emerald-700" :
+                          "bg-white border-gray-200 text-gray-500"
+                        }`}
+                      >
+                        {COLUMN_ROLES.map((r) => (
+                          <option key={r.value} value={r.value}>{r.label}</option>
+                        ))}
+                      </select>
+                    </th>
+                  ))}
+                </tr>
+                <tr className="bg-gray-50">
+                  {pdfTable.headers.map((header, i) => (
+                    <th key={i} className="px-2 py-1.5 border-b border-gray-200 text-left font-medium text-gray-600 truncate max-w-[150px]">
+                      {header || `Col ${i + 1}`}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pdfTable.rows.slice(0, 8).map((row, ri) => (
+                  <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
+                    {row.map((cell, ci) => (
+                      <td
+                        key={ci}
+                        className={`px-2 py-1.5 border-b border-gray-100 truncate max-w-[150px] ${
+                          columnMap[ci] === "ignore" ? "text-gray-400" : "text-gray-700"
+                        }`}
+                        title={cell}
+                      >
+                        {cell || "—"}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {pdfTable.rows.length > 8 && (
+            <p className="text-xs text-gray-400 text-center">
+              Showing 8 of {pdfTable.rows.length} rows
+            </p>
+          )}
+
+          <button
+            onClick={handleImportMapped}
+            disabled={!hasMapping}
+            className="w-full py-2.5 bg-emerald-500 text-white rounded-lg text-sm font-medium hover:bg-emerald-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {hasMapping
+              ? `Import Transactions`
+              : "Select Date + Debit/Credit columns to import"}
+          </button>
         </div>
       )}
 
@@ -261,7 +492,7 @@ export default function ImportData({ onImport }: Props) {
 
       {showPreview && preview.length === 0 && (
         <p className="text-sm text-amber-600 bg-amber-50 p-3 rounded-lg">
-          No transactions could be parsed. The PDF may be image-based (scanned) or in an unsupported format.
+          No transactions could be parsed. Try a different format or paste the text directly.
         </p>
       )}
     </div>
