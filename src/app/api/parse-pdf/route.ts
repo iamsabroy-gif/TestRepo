@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 interface ParsedRow {
   date: string;
@@ -9,6 +8,7 @@ interface ParsedRow {
 }
 
 async function extractText(data: Uint8Array, password?: string): Promise<string> {
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const params: Record<string, unknown> = {
     data,
     useSystemFonts: true,
@@ -17,20 +17,36 @@ async function extractText(data: Uint8Array, password?: string): Promise<string>
   };
   if (password) params.password = password;
 
-  const doc = await getDocument(params).promise;
+  const doc = await pdfjsLib.getDocument(params).promise;
   const pages: string[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
     const strings = content.items
-      .filter((item): item is typeof item & { str: string } => "str" in item)
-      .map((item) => item.str);
+      .filter((item) => "str" in item && typeof (item as { str?: string }).str === "string")
+      .map((item) => (item as { str: string }).str);
     pages.push(strings.join(" "));
   }
 
   await doc.destroy();
   return pages.join("\n");
+}
+
+export async function GET() {
+  try {
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    return NextResponse.json({
+      ok: true,
+      hasGetDocument: typeof pdfjsLib.getDocument === "function",
+      version: pdfjsLib.version || "unknown",
+    });
+  } catch (error) {
+    return NextResponse.json({
+      ok: false,
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    });
+  }
 }
 
 export async function POST(request: NextRequest) {
