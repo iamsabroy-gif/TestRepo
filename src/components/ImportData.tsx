@@ -10,25 +10,63 @@ interface Props {
   onImport: (transactions: Transaction[]) => void;
 }
 
+type ImportMode = "pdf" | "csv" | "email";
+
 export default function ImportData({ onImport }: Props) {
-  const [mode, setMode] = useState<"csv" | "email">("csv");
+  const [mode, setMode] = useState<ImportMode>("pdf");
   const [emailText, setEmailText] = useState("");
   const [preview, setPreview] = useState<ParsedStatement[]>([]);
   const [showPreview, setShowPreview] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = event.target?.result as string;
-      const parsed = parseCSV(text);
-      setPreview(parsed);
+    setError(null);
+
+    if (file.name.toLowerCase().endsWith(".pdf")) {
+      await handlePdfUpload(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        const parsed = parseCSV(text);
+        setPreview(parsed);
+        setShowPreview(true);
+      };
+      reader.readAsText(file);
+    }
+  }
+
+  async function handlePdfUpload(file: File) {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/parse-pdf", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to parse PDF");
+      }
+
+      const data = await res.json();
+      setPreview(data.transactions || []);
       setShowPreview(true);
-    };
-    reader.readAsText(file);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to parse PDF");
+    } finally {
+      setLoading(false);
+    }
   }
 
   function handleEmailParse() {
@@ -52,35 +90,61 @@ export default function ImportData({ onImport }: Props) {
     setPreview([]);
     setShowPreview(false);
     setEmailText("");
+    setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
+
+  const modeButtons: { key: ImportMode; label: string }[] = [
+    { key: "pdf", label: "PDF Statement" },
+    { key: "csv", label: "CSV" },
+    { key: "email", label: "Email / Text" },
+  ];
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
       <h2 className="text-lg font-semibold text-gray-800">Import Transactions</h2>
 
       <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => { setMode("csv"); setShowPreview(false); }}
-          className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors ${
-            mode === "csv" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-          }`}
-        >
-          Bank Statement (CSV)
-        </button>
-        <button
-          type="button"
-          onClick={() => { setMode("email"); setShowPreview(false); }}
-          className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors ${
-            mode === "email" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-          }`}
-        >
-          Email / Text
-        </button>
+        {modeButtons.map((m) => (
+          <button
+            key={m.key}
+            type="button"
+            onClick={() => { setMode(m.key); setShowPreview(false); setError(null); }}
+            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+              mode === m.key ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
       </div>
 
-      {mode === "csv" ? (
+      {mode === "pdf" && (
+        <div>
+          <p className="text-xs text-gray-500 mb-2">
+            Upload your bank statement PDF. Supports Federal Bank, Bandhan Bank, ICICI, SBI, HDFC, and other Indian bank formats. The file must not be password-protected.
+          </p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf"
+            onChange={handleFileUpload}
+            disabled={loading}
+            className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
+          />
+          {loading && (
+            <div className="flex items-center gap-2 mt-2 text-sm text-gray-500">
+              <svg className="w-4 h-4 animate-spin text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Parsing PDF...
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode === "csv" && (
         <div>
           <p className="text-xs text-gray-500 mb-2">
             Upload a CSV file from your bank. Common formats with Date, Description, Amount (or Debit/Credit) columns are supported.
@@ -93,7 +157,9 @@ export default function ImportData({ onImport }: Props) {
             className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
           />
         </div>
-      ) : (
+      )}
+
+      {mode === "email" && (
         <div>
           <p className="text-xs text-gray-500 mb-2">
             Paste transaction alerts from your bank emails or SMS. The parser detects amounts, dates, and whether it was a debit or credit.
@@ -112,6 +178,10 @@ export default function ImportData({ onImport }: Props) {
             Parse Transactions
           </button>
         </div>
+      )}
+
+      {error && (
+        <p className="text-sm text-red-600 bg-red-50 p-3 rounded-lg">{error}</p>
       )}
 
       {showPreview && preview.length > 0 && (
@@ -145,7 +215,7 @@ export default function ImportData({ onImport }: Props) {
 
       {showPreview && preview.length === 0 && (
         <p className="text-sm text-amber-600 bg-amber-50 p-3 rounded-lg">
-          No transactions could be parsed. Please check your data format.
+          No transactions could be parsed. The PDF may be password-protected, image-based (scanned), or in an unsupported format.
         </p>
       )}
     </div>
