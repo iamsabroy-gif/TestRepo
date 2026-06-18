@@ -22,8 +22,11 @@ async function extractText(data: Uint8Array, password?: string): Promise<string>
   const pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (pdfjsLib.PDFWorker as any)._setupFakeWorkerGlobal = async () => pdfjsWorker;
+  Object.defineProperty(pdfjsLib.PDFWorker, "_setupFakeWorkerGlobal", {
+    value: async () => pdfjsWorker,
+    writable: true,
+    configurable: true,
+  });
 
   const params: Record<string, unknown> = {
     data,
@@ -53,8 +56,11 @@ export async function GET() {
   try {
     const pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (pdfjsLib.PDFWorker as any)._setupFakeWorkerGlobal = async () => pdfjsWorker;
+    Object.defineProperty(pdfjsLib.PDFWorker, "_setupFakeWorkerGlobal", {
+    value: async () => pdfjsWorker,
+    writable: true,
+    configurable: true,
+  });
     return NextResponse.json({
       ok: true,
       version: pdfjsLib.version || "unknown",
