@@ -19,20 +19,15 @@ interface ParsedRow {
 }
 
 async function extractText(data: Uint8Array, password?: string): Promise<string> {
-  const path = await import("path");
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-
-  const pdfMjsPath = require.resolve("pdfjs-dist/legacy/build/pdf.mjs");
-  const workerPath = path.join(path.dirname(pdfMjsPath), "pdf.worker.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
+  const worker = new pdfjsLib.PDFWorker({ port: null });
 
   const params: Record<string, unknown> = {
     data,
-    useSystemFonts: true,
-    isEvalSupported: false,
+    worker,
     disableFontFace: true,
+    isEvalSupported: false,
     useWorkerFetch: false,
-    isOffscreenCanvasSupported: false,
   };
   if (password) params.password = password;
 
@@ -54,23 +49,12 @@ async function extractText(data: Uint8Array, password?: string): Promise<string>
 
 export async function GET() {
   try {
-    const path = await import("path");
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    let workerStatus = "unknown";
-    try {
-      const pdfMjsPath = require.resolve("pdfjs-dist/legacy/build/pdf.mjs");
-      const workerPath = path.join(path.dirname(pdfMjsPath), "pdf.worker.mjs");
-      const fs = await import("fs");
-      workerStatus = fs.existsSync(workerPath) ? `exists:${workerPath}` : `missing:${workerPath}`;
-    } catch (e) {
-      workerStatus = `error:${e instanceof Error ? e.message : String(e)}`;
-    }
+    const worker = new pdfjsLib.PDFWorker({ port: null });
     return NextResponse.json({
       ok: true,
-      hasGetDocument: typeof pdfjsLib.getDocument === "function",
       version: pdfjsLib.version || "unknown",
-      workerStatus,
-      hasDOMMatrix: typeof globalThis.DOMMatrix !== "undefined",
+      workerInline: !!worker,
     });
   } catch (error) {
     return NextResponse.json({
