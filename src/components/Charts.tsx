@@ -1,6 +1,7 @@
 "use client";
 
-import { Transaction } from "@/lib/types";
+import { Transaction, Currency } from "@/lib/types";
+import { formatAmount } from "@/lib/currency";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, type TooltipProps } from "recharts";
 import type { ValueType, NameType } from "recharts/types/component/DefaultTooltipContent";
 
@@ -23,9 +24,10 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 interface Props {
   transactions: Transaction[];
+  currency?: Currency;
 }
 
-export default function Charts({ transactions }: Props) {
+export default function Charts({ transactions, currency = "INR" }: Props) {
   const expenses = transactions.filter((t) => t.type === "expense");
   const incomes = transactions.filter((t) => t.type === "income");
 
@@ -71,19 +73,19 @@ export default function Charts({ transactions }: Props) {
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
           <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total Income</p>
           <p className="text-2xl font-bold text-emerald-600 mt-1">
-            ${totalIncome.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+            {formatAmount(totalIncome, currency)}
           </p>
         </div>
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
           <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total Expenses</p>
           <p className="text-2xl font-bold text-red-600 mt-1">
-            ${totalExpense.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+            {formatAmount(totalExpense, currency)}
           </p>
         </div>
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
           <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Net Balance</p>
           <p className={`text-2xl font-bold mt-1 ${totalIncome - totalExpense >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-            ${(totalIncome - totalExpense).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+            {formatAmount(totalIncome - totalExpense, currency)}
           </p>
         </div>
       </div>
@@ -107,7 +109,7 @@ export default function Charts({ transactions }: Props) {
                     <Cell key={index} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(value) => `$${Number(value).toFixed(2)}`} />
+                <Tooltip formatter={(value) => formatAmount(Number(value), currency)} />
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
@@ -122,7 +124,7 @@ export default function Charts({ transactions }: Props) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis dataKey="day" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip formatter={(value) => `$${Number(value).toFixed(2)}`} />
+                <Tooltip formatter={(value) => formatAmount(Number(value), currency)} />
                 <Legend />
                 <Bar dataKey="Income" fill="#10b981" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="Expense" fill="#ef4444" radius={[4, 4, 0, 0]} />

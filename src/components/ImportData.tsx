@@ -4,6 +4,7 @@ import { useState, useRef } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { Transaction, ParsedStatement } from "@/lib/types";
 import { parseCSV, parseEmailText } from "@/lib/parser";
+import { getCurrency, formatAmount } from "@/lib/currency";
 
 interface Props {
   onImport: (transactions: Transaction[]) => void;
@@ -42,6 +43,7 @@ export default function ImportData({ onImport }: Props) {
       id: uuidv4(),
       type: p.type,
       amount: p.amount,
+      currency: getCurrency(),
       category: "other",
       description: p.description,
       date: p.date,
@@ -133,7 +135,7 @@ export default function ImportData({ onImport }: Props) {
                   <p className="text-xs text-gray-400">{p.date}</p>
                 </div>
                 <span className={`font-medium ${p.type === "income" ? "text-emerald-600" : "text-red-600"}`}>
-                  {p.type === "income" ? "+" : "-"}${p.amount.toFixed(2)}
+                  {p.type === "income" ? "+" : "-"}{formatAmount(p.amount)}
                 </span>
               </div>
             ))}

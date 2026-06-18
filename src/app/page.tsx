@@ -2,25 +2,39 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { format } from "date-fns";
-import { Transaction } from "@/lib/types";
+import { Transaction, Currency } from "@/lib/types";
 import { getTransactions, saveTransactions, addTransaction as storeAdd, deleteTransaction as storeDel } from "@/lib/store";
+import { getCurrency, setCurrency as storeCurrency } from "@/lib/currency";
+import { SEED_TRANSACTIONS } from "@/lib/seed";
 import AddTransaction from "@/components/AddTransaction";
 import TransactionList from "@/components/TransactionList";
 import Charts from "@/components/Charts";
 import ImportData from "@/components/ImportData";
+import GmailImport from "@/components/GmailImport";
 import ExportButton from "@/components/ExportButton";
 import MonthPicker from "@/components/MonthPicker";
+
+const SEED_KEY = "expense-tracker-seeded";
 
 export default function Home() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [activeTab, setActiveTab] = useState<"dashboard" | "add" | "import">("dashboard");
+  const [currency, setCurrencyState] = useState<Currency>("INR");
   const reportRef = useRef<HTMLDivElement>(null);
 
   const monthKey = format(currentMonth, "yyyy-MM");
 
   useEffect(() => {
-    setTransactions(getTransactions());
+    setCurrencyState(getCurrency());
+    const existing = getTransactions();
+    if (existing.length === 0 && !localStorage.getItem(SEED_KEY)) {
+      saveTransactions(SEED_TRANSACTIONS);
+      localStorage.setItem(SEED_KEY, "true");
+      setTransactions(SEED_TRANSACTIONS);
+    } else {
+      setTransactions(existing);
+    }
   }, []);
 
   const filtered = transactions.filter((t) => t.date.startsWith(monthKey));
@@ -43,6 +57,11 @@ export default function Home() {
     setActiveTab("dashboard");
   }, []);
 
+  const handleCurrencyChange = (c: Currency) => {
+    setCurrencyState(c);
+    storeCurrency(c);
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
@@ -57,7 +76,17 @@ export default function Home() {
             <h1 className="text-lg font-bold text-gray-800">ExpenseTracker</h1>
           </div>
           <MonthPicker currentMonth={currentMonth} onChange={setCurrentMonth} />
-          <ExportButton targetRef={reportRef} filename={`expenses-${monthKey}`} />
+          <div className="flex items-center gap-3">
+            <select
+              value={currency}
+              onChange={(e) => handleCurrencyChange(e.target.value as Currency)}
+              className="px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-700 outline-none"
+            >
+              <option value="INR">₹ INR</option>
+              <option value="USD">$ USD</option>
+            </select>
+            <ExportButton targetRef={reportRef} filename={`expenses-${monthKey}`} />
+          </div>
         </div>
       </header>
 
@@ -82,7 +111,7 @@ export default function Home() {
       <main className="max-w-6xl mx-auto px-4 py-6">
         <div ref={reportRef} className="space-y-6">
           <div className={`${activeTab !== "dashboard" ? "hidden md:block" : ""}`}>
-            <Charts transactions={filtered} />
+            <Charts transactions={filtered} currency={currency} />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -95,6 +124,9 @@ export default function Home() {
               </div>
               <div className={`${activeTab !== "import" ? "hidden md:block" : ""}`}>
                 <ImportData onImport={handleImport} />
+              </div>
+              <div className={`${activeTab !== "import" ? "hidden md:block" : ""}`}>
+                <GmailImport onImport={handleImport} />
               </div>
             </div>
           </div>

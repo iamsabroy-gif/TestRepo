@@ -14,10 +14,13 @@ export type Category =
   | "education"
   | "other";
 
+export type Currency = "USD" | "INR";
+
 export interface Transaction {
   id: string;
   type: TransactionType;
   amount: number;
+  currency: Currency;
   category: Category;
   description: string;
   date: string; // ISO date string

@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { v4 as uuidv4 } from "uuid";
-import { Transaction, TransactionType, Category } from "@/lib/types";
+import { Transaction, TransactionType, Category, Currency } from "@/lib/types";
+import { getCurrency } from "@/lib/currency";
 
 const CATEGORIES: { value: Category; label: string }[] = [
   { value: "salary", label: "Salary" },
@@ -38,6 +39,7 @@ export default function AddTransaction({ onAdd }: Props) {
       id: uuidv4(),
       type,
       amount: parseFloat(amount),
+      currency: getCurrency(),
       category,
       description,
       date,

@@ -2,6 +2,7 @@
 
 import { Transaction } from "@/lib/types";
 import { format } from "date-fns";
+import { formatAmount } from "@/lib/currency";
 
 const CATEGORY_LABELS: Record<string, string> = {
   salary: "Salary",
@@ -57,7 +58,7 @@ export default function TransactionList({ transactions, onDelete }: Props) {
             </div>
             <div className="flex items-center gap-3">
               <span className={`text-sm font-semibold ${t.type === "income" ? "text-emerald-600" : "text-red-600"}`}>
-                {t.type === "income" ? "+" : "-"}${t.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                {t.type === "income" ? "+" : "-"}{formatAmount(t.amount, t.currency)}
               </span>
               <button
                 onClick={() => onDelete(t.id)}
