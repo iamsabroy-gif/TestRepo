@@ -35,12 +35,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ transactions, rawText: text.substring(0, 2000) });
   } catch (error) {
     console.error("PDF parse error:", error);
+    const name = error instanceof Error ? error.name : "";
     const message = error instanceof Error ? error.message : "";
-    const isPasswordError = /password|encrypted|decrypt/i.test(message);
+    const isPasswordError =
+      name === "PasswordException" ||
+      /password|encrypted|decrypt|need a password/i.test(message) ||
+      /password/i.test(name);
     return NextResponse.json(
       {
         error: isPasswordError
-          ? "Incorrect password or the PDF requires a password to open."
+          ? "This PDF is password-protected. Please enter the password to unlock it."
           : "Failed to parse PDF. The file may be corrupted or in an unsupported format.",
         needsPassword: isPasswordError,
       },
