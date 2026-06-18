@@ -24,7 +24,7 @@ export default function ImportData({ onImport }: Props) {
   const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -32,8 +32,9 @@ export default function ImportData({ onImport }: Props) {
     setNeedsPassword(false);
 
     if (file.name.toLowerCase().endsWith(".pdf")) {
-      await handlePdfUpload(file, pdfPassword || undefined);
+      setPendingPdfFile(file);
     } else {
+      setPendingPdfFile(null);
       const reader = new FileReader();
       reader.onload = (event) => {
         const text = event.target?.result as string;
@@ -45,14 +46,16 @@ export default function ImportData({ onImport }: Props) {
     }
   }
 
-  async function handlePdfUpload(file: File, password?: string) {
+  async function handleParsePdf() {
+    if (!pendingPdfFile) return;
+
     setLoading(true);
     setError(null);
 
     try {
       const formData = new FormData();
-      formData.append("file", file);
-      if (password) formData.append("password", password);
+      formData.append("file", pendingPdfFile);
+      if (pdfPassword) formData.append("password", pdfPassword);
 
       const res = await fetch("/api/parse-pdf", {
         method: "POST",
@@ -63,9 +66,8 @@ export default function ImportData({ onImport }: Props) {
 
       if (!res.ok) {
         if (data.needsPassword) {
-          setPendingPdfFile(file);
           setNeedsPassword(true);
-          setError(password ? "Incorrect password. Please try again." : "This PDF is password-protected. Enter the password below and retry.");
+          setError(pdfPassword ? "Incorrect password. Please try again." : "This PDF is password-protected. Enter the password and click Parse.");
           return;
         }
         throw new Error(data.error || "Failed to parse PDF");
@@ -76,16 +78,12 @@ export default function ImportData({ onImport }: Props) {
       setPdfPassword("");
       setPreview(data.transactions || []);
       setShowPreview(true);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse PDF");
     } finally {
       setLoading(false);
     }
-  }
-
-  function handleRetryWithPassword() {
-    if (!pendingPdfFile || !pdfPassword) return;
-    handlePdfUpload(pendingPdfFile, pdfPassword);
   }
 
   function handleEmailParse() {
@@ -144,48 +142,49 @@ export default function ImportData({ onImport }: Props) {
       {mode === "pdf" && (
         <div className="space-y-3">
           <p className="text-xs text-gray-500">
-            Upload your bank statement PDF. Supports Federal Bank, Bandhan Bank, ICICI, SBI, HDFC, and other Indian bank formats. Password-protected PDFs are supported.
+            Upload your bank statement PDF. Supports Federal Bank, Bandhan Bank, ICICI, SBI, HDFC, and other Indian bank formats.
           </p>
           <input
             ref={fileInputRef}
             type="file"
             accept=".pdf"
-            onChange={handleFileUpload}
+            onChange={handleFileSelect}
             disabled={loading}
             className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
           />
-          <div className="space-y-2">
-            <label className="block text-xs text-gray-500">
-              PDF password (if protected — most banks use DOB as DDMMYYYY)
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="password"
-                value={pdfPassword}
-                onChange={(e) => setPdfPassword(e.target.value)}
-                placeholder="Enter PDF password"
-                className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-gray-800"
-              />
-              {needsPassword && pendingPdfFile && (
-                <button
-                  type="button"
-                  onClick={handleRetryWithPassword}
-                  disabled={!pdfPassword || loading}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-                >
-                  {loading ? "Unlocking..." : "Unlock & Parse"}
-                </button>
-              )}
-            </div>
-          </div>
-          {loading && (
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <svg className="w-4 h-4 animate-spin text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Parsing PDF...
-            </div>
+          {pendingPdfFile && (
+            <>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">
+                  Password (if protected — most banks use DOB as DDMMYYYY)
+                </label>
+                <input
+                  type="password"
+                  value={pdfPassword}
+                  onChange={(e) => setPdfPassword(e.target.value)}
+                  placeholder="Leave blank if not password-protected"
+                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-gray-800"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleParsePdf}
+                disabled={loading}
+                className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {loading ? (
+                  <>
+                    <svg className="w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Parsing...
+                  </>
+                ) : (
+                  "Parse PDF"
+                )}
+              </button>
+            </>
           )}
         </div>
       )}
@@ -199,7 +198,7 @@ export default function ImportData({ onImport }: Props) {
             ref={fileInputRef}
             type="file"
             accept=".csv,.txt"
-            onChange={handleFileUpload}
+            onChange={handleFileSelect}
             className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
           />
         </div>
