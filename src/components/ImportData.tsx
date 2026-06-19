@@ -11,7 +11,7 @@ interface Props {
 }
 
 type ImportMode = "pdf" | "csv" | "email";
-type ColumnRole = "ignore" | "date" | "description" | "debit" | "credit" | "amount" | "type";
+type ColumnRole = "ignore" | "date" | "description" | "debit" | "credit" | "amount" | "type" | "balance";
 
 interface PdfTable {
   headers: string[];
@@ -27,6 +27,7 @@ const COLUMN_ROLES: { value: ColumnRole; label: string; desc: string }[] = [
   { value: "credit", label: "Credit (Income)", desc: "Only income amounts" },
   { value: "amount", label: "Amount (Both)", desc: "Single column with Dr & Cr" },
   { value: "type", label: "Dr/Cr Type", desc: "Optional: helps classify Amount" },
+  { value: "balance", label: "Balance", desc: "Running balance (not imported)" },
 ];
 
 function normalizeDate(dateStr: string): string {
@@ -140,6 +141,7 @@ export default function ImportData({ onImport }: Props) {
       if (s.credit !== undefined) initialMap[s.credit] = "credit";
       if (s.amount !== undefined) initialMap[s.amount] = "amount";
       if (s.type !== undefined) initialMap[s.type] = "type";
+      if (s.balance !== undefined) initialMap[s.balance] = "balance";
       setColumnMap(initialMap);
 
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -407,57 +409,84 @@ export default function ImportData({ onImport }: Props) {
           </div>
 
           <p className="text-xs text-gray-500">
-            Assign each column a role. Use <b>Debit + Credit</b> if they are separate columns, or <b>Amount (Both)</b> if debits and credits are in the same column.
+            Assign each column a role. Use <b>Debit + Credit</b> if they are separate columns, or <b>Amount (Both)</b> if debits and credits are in the same column. Mark Balance to see it in the preview (it won&apos;t be imported).
           </p>
 
           <div className="overflow-x-auto border border-gray-200 rounded-lg">
-            <table className="w-full text-xs">
+            <table className="w-full text-xs border-collapse">
               <thead>
                 <tr className="bg-gray-50">
-                  {pdfTable.headers.map((header, i) => (
-                    <th key={i} className="px-2 py-1 border-b border-gray-200 text-left min-w-[100px]">
-                      <select
-                        value={columnMap[i] || "ignore"}
-                        onChange={(e) => handleColumnChange(i, e.target.value as ColumnRole)}
-                        className={`w-full px-1.5 py-1 rounded text-xs font-medium border outline-none ${
-                          columnMap[i] === "date" ? "bg-blue-50 border-blue-300 text-blue-700" :
-                          columnMap[i] === "description" ? "bg-purple-50 border-purple-300 text-purple-700" :
-                          columnMap[i] === "debit" ? "bg-red-50 border-red-300 text-red-700" :
-                          columnMap[i] === "credit" ? "bg-emerald-50 border-emerald-300 text-emerald-700" :
-                          columnMap[i] === "amount" ? "bg-amber-50 border-amber-300 text-amber-700" :
-                          columnMap[i] === "type" ? "bg-indigo-50 border-indigo-300 text-indigo-700" :
-                          "bg-white border-gray-200 text-gray-500"
-                        }`}
-                      >
-                        {COLUMN_ROLES.map((r) => (
-                          <option key={r.value} value={r.value}>{r.label}</option>
-                        ))}
-                      </select>
-                    </th>
-                  ))}
+                  {pdfTable.headers.map((header, i) => {
+                    const role = columnMap[i] || "ignore";
+                    const isNumeric = role === "debit" || role === "credit" || role === "amount" || role === "balance";
+                    return (
+                      <th key={i} className={`px-3 py-1.5 border-b border-gray-200 ${
+                        role === "description" ? "min-w-[180px]" :
+                        role === "date" ? "min-w-[90px] w-[90px]" :
+                        isNumeric ? "min-w-[110px] w-[130px]" :
+                        "min-w-[80px]"
+                      } ${isNumeric ? "text-right" : "text-left"}`}>
+                        <select
+                          value={role}
+                          onChange={(e) => handleColumnChange(i, e.target.value as ColumnRole)}
+                          className={`w-full px-1.5 py-1 rounded text-xs font-medium border outline-none ${
+                            role === "date" ? "bg-blue-50 border-blue-300 text-blue-700" :
+                            role === "description" ? "bg-purple-50 border-purple-300 text-purple-700" :
+                            role === "debit" ? "bg-red-50 border-red-300 text-red-700" :
+                            role === "credit" ? "bg-emerald-50 border-emerald-300 text-emerald-700" :
+                            role === "amount" ? "bg-amber-50 border-amber-300 text-amber-700" :
+                            role === "type" ? "bg-indigo-50 border-indigo-300 text-indigo-700" :
+                            role === "balance" ? "bg-sky-50 border-sky-300 text-sky-700" :
+                            "bg-white border-gray-200 text-gray-500"
+                          }`}
+                        >
+                          {COLUMN_ROLES.map((r) => (
+                            <option key={r.value} value={r.value}>{r.label}</option>
+                          ))}
+                        </select>
+                      </th>
+                    );
+                  })}
                 </tr>
                 <tr className="bg-gray-50">
-                  {pdfTable.headers.map((header, i) => (
-                    <th key={i} className="px-2 py-1.5 border-b border-gray-200 text-left font-medium text-gray-600 truncate max-w-[150px]">
-                      {header || `Col ${i + 1}`}
-                    </th>
-                  ))}
+                  {pdfTable.headers.map((header, i) => {
+                    const role = columnMap[i] || "ignore";
+                    const isNumeric = role === "debit" || role === "credit" || role === "amount" || role === "balance";
+                    return (
+                      <th key={i} className={`px-3 py-1.5 border-b border-gray-200 font-medium text-gray-600 truncate ${
+                        isNumeric ? "text-right" : "text-left"
+                      }`}>
+                        {header || `Col ${i + 1}`}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
                 {pdfTable.rows.slice(0, 8).map((row, ri) => (
                   <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
-                    {row.map((cell, ci) => (
-                      <td
-                        key={ci}
-                        className={`px-2 py-1.5 border-b border-gray-100 truncate max-w-[150px] ${
-                          columnMap[ci] === "ignore" ? "text-gray-400" : "text-gray-700"
-                        }`}
-                        title={cell}
-                      >
-                        {cell || "—"}
-                      </td>
-                    ))}
+                    {row.map((cell, ci) => {
+                      const role = columnMap[ci] || "ignore";
+                      const isNumeric = role === "debit" || role === "credit" || role === "amount" || role === "balance";
+                      return (
+                        <td
+                          key={ci}
+                          className={`px-3 py-1.5 border-b border-gray-100 truncate ${
+                            isNumeric ? "text-right font-mono tabular-nums" : ""
+                          } ${
+                            role === "ignore" ? "text-gray-400" :
+                            role === "debit" ? "text-red-600 font-medium" :
+                            role === "credit" ? "text-emerald-600 font-medium" :
+                            role === "balance" ? "text-sky-600 font-medium" :
+                            role === "amount" ? "text-amber-700 font-medium" :
+                            "text-gray-700"
+                          }`}
+                          title={cell}
+                        >
+                          {cell || "—"}
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
               </tbody>

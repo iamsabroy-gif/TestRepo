@@ -284,6 +284,7 @@ function suggestMappings(headers: string[]): Record<string, number> {
     ["credit", (h) => !isDrCrCombo(h) && /credit|deposit|credit\s*am|deposit\s*am|money\s*in|inflow/i.test(h)],
     ["amount", (h) => /^amount$|^txn\s*am|^transaction\s*am|^value$/i.test(h)],
     ["type", (h) => isDrCrCombo(h) || /^type$|^txn\s*type$/i.test(h)],
+    ["balance", (h) => /balance|closing\s*bal|running\s*bal|available\s*bal|ledger\s*bal/i.test(h)],
   ];
 
   for (let i = 0; i < headers.length; i++) {
