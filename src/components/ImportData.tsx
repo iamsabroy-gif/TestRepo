@@ -174,14 +174,23 @@ export default function ImportData({ onImport }: Props) {
   ): "income" | "expense" {
     const creditIndicator = /\bcr\.?\b|credit|deposit|credited|received/i;
     const debitIndicator = /\bdr\.?\b|debit|withdrawal|debited|paid/i;
-    const creditKeywords = /credit|cr\b|deposit|received|salary|refund|cashback|reversal|interest|neft.*from|upi.*from|imps.*from|upi\/cr/i;
-    const debitKeywords = /debit|dr\b|paid|withdraw|purchase|upi.*to|neft.*to|imps.*to|emi|charge|fee|upi\/dr/i;
+    const drCrSuffix = /[-\s/](dr|cr)\.?\s*$/i;
+    const creditKeywords = /credit|cr\b|deposit|received|salary|refund|cashback|reversal|interest|neft.*from|upi.*from|imps.*from|upi\/cr|by\s+transfer|credited/i;
+    const debitKeywords = /debit|dr\b|paid|withdraw|purchase|upi.*to|neft.*to|imps.*to|emi|charge|fee|upi\/dr|to\s+transfer|debited|atm\s*wdl|pos\s/i;
 
     if (typeIdx !== -1) {
       const typeVal = (row[typeIdx] || "").trim();
       if (creditIndicator.test(typeVal)) return "income";
       if (debitIndicator.test(typeVal)) return "expense";
     }
+
+    const suffixMatch = description.match(drCrSuffix);
+    if (suffixMatch) {
+      return /cr/i.test(suffixMatch[1]) ? "income" : "expense";
+    }
+
+    if (creditIndicator.test(description) && !debitIndicator.test(description)) return "income";
+    if (debitIndicator.test(description) && !creditIndicator.test(description)) return "expense";
 
     if (creditIndicator.test(amountCell) && !debitIndicator.test(amountCell)) return "income";
     if (debitIndicator.test(amountCell) && !creditIndicator.test(amountCell)) return "expense";
@@ -190,6 +199,7 @@ export default function ImportData({ onImport }: Props) {
     if (creditKeywords.test(description) && !debitKeywords.test(description)) return "income";
     if (debitKeywords.test(description) && !creditKeywords.test(description)) return "expense";
     if (creditKeywords.test(rowText) && !debitKeywords.test(rowText)) return "income";
+    if (debitKeywords.test(rowText) && !creditKeywords.test(rowText)) return "expense";
 
     return "expense";
   }
