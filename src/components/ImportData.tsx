@@ -189,9 +189,6 @@ export default function ImportData({ onImport }: Props) {
       return /cr/i.test(suffixMatch[1]) ? "income" : "expense";
     }
 
-    if (creditIndicator.test(description) && !debitIndicator.test(description)) return "income";
-    if (debitIndicator.test(description) && !creditIndicator.test(description)) return "expense";
-
     if (creditIndicator.test(amountCell) && !debitIndicator.test(amountCell)) return "income";
     if (debitIndicator.test(amountCell) && !creditIndicator.test(amountCell)) return "expense";
 
